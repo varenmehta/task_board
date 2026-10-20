@@ -12,6 +12,9 @@ import { settingsView } from './views/settings.js';
 import { openTask } from './views/task.js';
 import { toggleAssistant } from './views/assistant.js';
 import { projectModal, teamModal } from './views/team.js';
+import { reportsView } from './views/reports.js';
+import { openPalette, shortcutsHelp } from './views/palette.js';
+import { fmtDuration } from './dom.js';
 
 const root = $('#root');
 let cleanup = null, es = null;
@@ -54,6 +57,21 @@ window.addEventListener('tb:unauthorized', () => { if (state.me) { state.me = nu
 
 // ---------- shell ----------
 let sidebarNav, viewEl, bellBtn;
+const timerChip = h('button', { class: 'timer-chip hide', 'aria-label': 'Running timer' });
+let timerState = null, timerTick = null;
+async function refreshTimer() {
+  const t = await api.get('/timer').catch(() => null);
+  timerState = t && !t.none ? { ...t, at: Date.now() } : null;
+  paintTimer();
+}
+function paintTimer() {
+  clearInterval(timerTick);
+  if (!timerState) return timerChip.classList.add('hide');
+  const draw = () => { const secs = timerState.elapsed + (Date.now() - timerState.at) / 1000; const m = Math.floor(secs / 60), s2 = Math.floor(secs % 60); timerChip.replaceChildren(icon('clock', 14), `${timerState.key} · ${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${String(s2).padStart(2, '0')}`); };
+  draw(); timerChip.classList.remove('hide'); timerTick = setInterval(draw, 1000);
+  timerChip.onclick = () => openTask(timerState.task_id);
+}
+function timerChipInit() { refreshTimer(); on('timer', refreshTimer); }
 function buildShell() {
   sidebarNav = h('div', { class: 'side-scroll' });
   viewEl = h('div', { style: { display: 'contents' } });
@@ -69,6 +87,7 @@ function buildShell() {
       h('header', { class: 'topbar' },
         h('button', { class: 'icon-btn mobile-only', 'aria-label': 'Menu', onclick: () => document.body.classList.toggle('nav-open') }, icon('menu', 20)),
         searchBox, h('div', { class: 'grow' }),
+        timerChip,
         h('button', { class: 'btn ai sm', onclick: () => toggleAssistant(), title: 'AI assistant' }, icon('sparkles', 15), 'Ask AI'),
         bellBtn),
       viewEl));
@@ -76,10 +95,19 @@ function buildShell() {
   renderSidebar();
   updateBell();
   document.addEventListener('keydown', e => {
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('.search .input')?.focus(); }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); }
     if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && !document.activeElement.isContentEditable) { e.preventDefault(); $('.search .input')?.focus(); }
   });
   document.addEventListener('click', e => { if (e.target.closest('.sidebar a, .nav-item')) document.body.classList.remove('nav-open'); });
+  // vim-style "g then <key>" navigation and "?" help
+  let gPending = null;
+  document.addEventListener('keydown', e => {
+    if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || document.activeElement.isContentEditable || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('.modal-back, .popover')) return;
+    if (gPending) { const to = { d: '#/', m: '#/my-tasks', i: '#/inbox', r: '#/reports', t: '#/team', a: '#/automations', s: '#/settings' }[e.key]; clearTimeout(gPending); gPending = null; if (to) { e.preventDefault(); location.hash = to; } return; }
+    if (e.key === 'g') gPending = setTimeout(() => (gPending = null), 900);
+    if (e.key === '?') { e.preventDefault(); shortcutsHelp(); }
+  });
+  timerChipInit();
   if (!isViewer()) root.append(h('button', { class: 'fab', onclick: () => toggleAssistant(), 'aria-label': 'AI assistant' }, icon('sparkles', 18), h('span', 'AI assistant')));
 }
 
@@ -101,6 +129,7 @@ export function renderSidebar() {
     h('div', { class: 'nav-title' }, 'Projects', canManage() || state.teams.some(t => t.can_manage) ? h('button', { class: 'icon-btn', style: { width: '22px', height: '22px' }, title: 'New project', 'aria-label': 'New project', onclick: () => projectModal() }, icon('plus', 15)) : null),
     h('div', { id: 'side-projects' }),
     h('div', { class: 'nav-title' }, 'Workspace'),
+    state.me.role !== 'guest' ? navItem('#/reports', 'barChart', 'Reports') : null,
     navItem('#/team', 'users', 'Teams & people'),
     navItem('#/automations', 'zap', 'Automations'),
     navItem('#/settings', 'settings', 'Settings'));
@@ -169,6 +198,7 @@ function connectEvents() {
   es?.close();
   es = new EventSource('/api/events');
   es.addEventListener('task', e => emit('task', JSON.parse(e.data)));
+  es.addEventListener('timer', () => emit('timer', {}));
   es.addEventListener('notification', e => {
     const n = JSON.parse(e.data);
     setUnread(state.unread + 1);
@@ -188,6 +218,7 @@ const routes = [
   [/^#\/project\/(\d+)(?:\/(\w+))?/, m => (el) => projectView(el, +m[1], m[2] || 'board')],
   [/^#\/my-tasks/, () => myTasksView],
   [/^#\/inbox/, () => inboxView],
+  [/^#\/reports/, () => reportsView],
   [/^#\/team/, () => teamView],
   [/^#\/automations/, () => automationsView],
   [/^#\/settings(?:\/(\w+))?/, m => (el) => settingsView(el, m[1] || 'profile')],

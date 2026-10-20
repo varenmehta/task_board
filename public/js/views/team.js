@@ -8,10 +8,11 @@ const ROLE_INFO = {
   manager: ['Manager', 'Creates teams & projects, manages automations'],
   member: ['Member', 'Creates and edits tasks in their teams’ projects'],
   viewer: ['Viewer', 'Read-only access to their teams’ projects'],
+  guest: ['Guest', 'Clients/contractors: only invited projects, can comment but not edit'],
 };
 const COLORS = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6'];
 
-export function roleChip(role) { return h('span', { class: 'chip ' + ({ admin: 'accent', manager: 'blue', member: '', viewer: 'amber' }[role] || '') }, ROLE_INFO[role]?.[0] || role); }
+export function roleChip(role) { return h('span', { class: 'chip ' + ({ admin: 'accent', manager: 'blue', member: '', viewer: 'amber', guest: 'amber' }[role] || '') }, ROLE_INFO[role]?.[0] || role); }
 
 function colorPicker(initial, onPick) {
   let cur = initial || COLORS[0];
@@ -56,12 +57,15 @@ export function teamModal(team, onDone) {
 }
 
 function inviteModal(onDone) {
-  const v = { name: '', email: '', role: 'member', team_ids: [] };
+  const v = { name: '', email: '', role: 'member', team_ids: [], project_ids: [] };
   const name = h('input', { class: 'input', placeholder: 'Full name', oninput: () => (v.name = name.value) });
   const email = h('input', { class: 'input', type: 'email', placeholder: 'name@company.com', oninput: () => (v.email = email.value) });
   const role = h('select', { class: 'select', onchange: () => (v.role = role.value) }, Object.entries(ROLE_INFO).map(([k, [l, d]]) => h('option', { value: k, selected: k === 'member' }, `${l} — ${d}`)));
   const teams = h('div', { class: 'col', style: { gap: '6px' } }, state.teams.map(t => h('label', { class: 'row' }, h('input', { type: 'checkbox', onchange: e => { e.target.checked ? v.team_ids.push(t.id) : v.team_ids.splice(v.team_ids.indexOf(t.id), 1); } }), h('span', { class: 'pdot', style: { background: t.color } }), t.name)));
-  modal({ title: 'Invite a teammate', body: [h('div', { class: 'field' }, h('label', 'Name'), name), h('div', { class: 'field' }, h('label', 'Email'), email), h('div', { class: 'field' }, h('label', 'Role'), role), h('div', { class: 'field' }, h('label', 'Add to teams'), teams)],
+  const projs = h('div', { class: 'col', style: { gap: '6px' } }, state.projects.map(p => h('label', { class: 'row' }, h('input', { type: 'checkbox', onchange: e => { e.target.checked ? v.project_ids.push(p.id) : v.project_ids.splice(v.project_ids.indexOf(p.id), 1); } }), h('span', { class: 'pdot', style: { background: p.color } }), p.name)));
+  const guestBox = h('div', { class: 'field hide' }, h('label', 'Projects they can access (guests)'), projs);
+  role.addEventListener('change', () => guestBox.classList.toggle('hide', role.value !== 'guest'));
+  modal({ title: 'Invite a teammate', body: [h('div', { class: 'field' }, h('label', 'Name'), name), h('div', { class: 'field' }, h('label', 'Email'), email), h('div', { class: 'field' }, h('label', 'Role'), role), h('div', { class: 'field' }, h('label', 'Add to teams'), teams), guestBox],
     actions: [{ label: 'Cancel' }, { label: 'Send invite', kind: 'primary', onClick: async () => {
       try {
         const r = await api.post('/users', v); await reloadLookups(); onDone?.();

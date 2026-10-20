@@ -15,7 +15,11 @@ function editable(actor, taskId) {
 
 export function stopTimer(userId) {
   const running = all('SELECT * FROM time_entries WHERE user_id=? AND running=1', userId);
-  for (const r of running) run('UPDATE time_entries SET running=0, seconds=seconds+?, started_at=NULL WHERE id=?', secondsSince(r.started_at), r.id);
+  for (const r of running) {
+    const total = r.seconds + secondsSince(r.started_at);
+    if (total < 5) run('DELETE FROM time_entries WHERE id=?', r.id); // accidental start/stop: don't clutter the log
+    else run('UPDATE time_entries SET running=0, seconds=?, started_at=NULL WHERE id=?', total, r.id);
+  }
   if (running.length) pushTo([userId], 'timer', {});
   return running.length;
 }

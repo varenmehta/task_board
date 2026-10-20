@@ -72,6 +72,29 @@ const P = {
   grip: 'M9 6h.01M9 12h.01M9 18h.01M15 6h.01M15 12h.01M15 18h.01',
   arrowUp: 'M12 19V5M6 11l6-6 6 6',
   whatsapp: 'M4 20l1.2-4A8 8 0 1 1 8 18.8z',
+  bug: 'M9 7V5a3 3 0 0 1 6 0v2M6 9h12v6a6 6 0 0 1-12 0zM3 13h3M18 13h3M4 19l3-2M20 19l-3-2M4 7l3 2M20 7l-3 2M12 9v12',
+  bookmark: 'M6 3h12v18l-6-4-6 4z',
+  layers: 'M12 3 3 8l9 5 9-5zM3 13l9 5 9-5M3 17l9 5 9-5',
+  paperclip: 'M20 11l-8.5 8.5a5 5 0 0 1-7-7L13 4a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4L14 7',
+  play: 'M7 4l13 8-13 8z', pause: 'M7 4h3v16H7zM14 4h3v16h-3z', stop: 'M6 6h12v12H6z',
+  download: 'M12 4v12M7 11l5 5 5-5M4 20h16', upload: 'M12 16V4M7 9l5-5 5 5M4 20h16',
+  grid: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
+  gantt: 'M4 6h9M8 12h12M6 18h8',
+  target: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM12 12h.01',
+  rocket: 'M5 15c-1 1-2 4-2 6 2 0 5-1 6-2M14 4c4-1 6 0 6 0s1 2 0 6l-7 7-6-6zM9.5 14.5 7 12',
+  lock: 'M6 11h12v9H6zM8 11V8a4 4 0 0 1 8 0v3',
+  mic: 'M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zM6 11a6 6 0 0 0 12 0M12 17v4',
+  keyboard: 'M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10',
+  repeat: 'M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3',
+  fileText: 'M6 3h9l4 4v14H6zM14 3v5h5M9 13h7M9 17h7',
+  eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  barChart: 'M4 20V10M10 20V4M16 20v-8M22 20H2',
+  github: 'M9 19c-4 1.5-4-2-6-2.5M15 21v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1-.3-3.5 1.3a12 12 0 0 0-6.2 0C6.5 2.8 5.5 3.1 5.5 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.700 5.700 5.500 6-.6.6-.6 1.200-.5 2V21',
+  clipboard: 'M9 4h6v3H9zM7 5H5v16h14V5h-2',
+  history: 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2',
+  key: 'M14 10a4 4 0 1 0-3.9 4l.9.9V18h3v2h3v-3l2-2.100zM8 10h.01',
+  globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18',
+  wand: 'M4 20 15 9M14 4l1 2 2 1-2 1-1 2-1-2-2-1 2-1zM19 12l.7 1.300 1.300.7-1.300.7-.7 1.300-.7-1.300-1.300-.7 1.300-.7z',
 };
 export function icon(name, size = 18, cls = '') {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -108,13 +131,20 @@ export function ago(iso) {
   if (s < 86400 * 7) return Math.floor(s / 86400) + 'd ago';
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
+export const TYPE = { task: ['check', 'Task', 'var(--text-3)'], bug: ['bug', 'Bug', 'var(--red)'], story: ['bookmark', 'Story', 'var(--green)'], epic: ['layers', 'Epic', '#8b5cf6'] };
+export const typeIcon = (type, size = 14) => { const [ico, label, color] = TYPE[type] || TYPE.task; const el = icon(ico, size); el.style.color = color; el.setAttribute('aria-label', label); return h('span', { title: label, style: { display: 'inline-flex' } }, el); };
+export function fmtDuration(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  const h2 = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return h2 ? `${h2}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+}
 export const PRIORITY = { urgent: { label: 'Urgent', color: 'var(--p-urgent)' }, high: { label: 'High', color: 'var(--p-high)' }, medium: { label: 'Medium', color: 'var(--p-medium)' }, low: { label: 'Low', color: 'var(--p-low)' } };
 export const STATUS_LABEL = { backlog: 'Backlog', todo: 'To do', in_progress: 'In progress', review: 'In review', done: 'Done' };
 export function priorityBadge(p, compact) {
   const pr = PRIORITY[p] || PRIORITY.medium;
   return h('span', { class: 'prio' + (compact ? ' compact' : ''), title: pr.label + ' priority' }, h('i', { style: { background: pr.color } }), compact ? null : pr.label);
 }
-export function statusDot(s) { return h('span', { class: 'sdot s-' + s }); }
+export function statusDot(s, category) { return h('span', { class: 'sdot s-' + s + (['backlog', 'todo', 'in_progress', 'review', 'done'].includes(s) ? '' : ' c-' + (category || 'todo')) }); }
 
 // ---- toast / modal / popover ----
 let toastHost;

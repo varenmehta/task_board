@@ -458,7 +458,7 @@ R.get('/api/projects/:id/board', ({ user, params }) => {
   const p = loadProject(user, params.id);
   return {
     project: projectOut(user, p), tasks: T.listProjectTasks(p.id), members: projectMembers(p).map(u => ({ ...publicUser(u) })),
-    sprints: all('SELECT * FROM sprints WHERE project_id=? ORDER BY id', p.id), releases: all('SELECT * FROM releases WHERE project_id=? ORDER BY id', p.id),
+    sprints: PLAN.listSprints(p.id).sprints, releases: PLAN.listReleases(p.id),
     views: all('SELECT id,user_id,name,filters,shared FROM saved_views WHERE project_id=? AND (user_id=? OR shared=1) ORDER BY name', p.id, user.id).map(v => ({ ...v, filters: parseJSON(v.filters, {}), shared: !!v.shared, mine: v.user_id === user.id })),
     templates: REC.listTemplates(p.id),
   };
@@ -477,7 +477,7 @@ R.post('/api/tasks/:id/subtasks', ({ user, params, body }) => {
   if (!parent) throw notFound('Task not found');
   const titles = (Array.isArray(body.titles) ? body.titles : [body.title]).map(s => String(s || '').trim()).filter(Boolean).slice(0, 12);
   if (!titles.length) throw bad('Title is required');
-  return tx(() => titles.map(title => T.createTask(user, parent.project_id, { title, parent_id: parent.id, assignee_id: parent.assignee_id, status: 'todo' })));
+  return tx(() => titles.map(title => T.createTask(user, parent.project_id, { title, parent_id: parent.id, assignee_id: parent.assignee_id })));
 });
 
 R.get('/api/my-tasks', ({ user }) => T.listAssigned(user.id));

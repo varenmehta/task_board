@@ -1,8 +1,9 @@
-import { h, icon, menu, avatar, PRIORITY, STATUS_LABEL, priorityBadge, statusDot, modal, toast, todayStr, $ } from '../dom.js';
+import { h, icon, menu, avatar, PRIORITY, STATUS_LABEL, priorityBadge, statusDot, modal, toast, todayStr, $, TYPE, typeIcon } from '../dom.js';
 import { api } from '../api.js';
-import { state, userById, membersOfProject, projectById } from '../state.js';
+import { state, userById, membersOfProject, projectById, statusesOf } from '../state.js';
 
-export const statusMenu = (anchor, cur, cb) => menu(anchor, state.statuses.map(s => ({ node: statusDot(s.id), label: s.label, checked: s.id === cur, onClick: () => cb(s.id) })));
+export const statusMenu = (anchor, cur, cb, statuses = state.statuses) => menu(anchor, statuses.map(s => ({ node: statusDot(s.id, s.category), label: s.label, checked: s.id === cur, onClick: () => cb(s.id) })));
+export const simpleMenu = (anchor, items, cur, cb, empty) => menu(anchor, [...(empty ? [{ label: empty, checked: cur == null, onClick: () => cb(null) }, { divider: true }] : []), ...items.map(([id, label]) => ({ label, checked: id === cur, onClick: () => cb(id) }))]);
 export const priorityMenu = (anchor, cur, cb) => menu(anchor, Object.entries(PRIORITY).map(([id, p]) => ({ node: h('i', { style: { width: '8px', height: '8px', background: p.color, borderRadius: '3px', transform: 'rotate(45deg)', margin: '0 4px' } }), label: p.label, checked: id === cur, onClick: () => cb(id) })));
 export const assigneeMenu = (anchor, members, cur, cb) => menu(anchor, [
   { node: avatar(null, 20), label: 'Unassigned', checked: !cur, onClick: () => cb(null) },
@@ -38,10 +39,20 @@ export function labelEditor(labels, onChange, { readonly = false } = {}) {
 }
 
 // ---- create-task modal with "describe it in plain English" AI fill ----
-export function createTaskModal({ projectId, status = 'todo', draft = {}, onCreated }) {
+export function createTaskModal({ projectId, status = 'todo', draft = {}, onCreated, templates = [], date = null }) {
   const project = projectById(projectId);
   const members = membersOfProject(projectId);
-  const v = { title: draft.title || '', description: draft.description || '', status: draft.status || status, priority: draft.priority || 'medium', assignee_id: draft.assignee_id ?? null, due_date: draft.due_date || null, estimate: draft.estimate ?? null, labels: [...(draft.labels || [])] };
+  const statuses = statusesOf(projectId);
+  const v = { type: draft.type || 'task', title: draft.title || '', description: draft.description || '', status: statuses.some(x => x.id === (draft.status || status)) ? (draft.status || status) : statuses[0].id, priority: draft.priority || 'medium', assignee_id: draft.assignee_id ?? null, due_date: draft.due_date || date || null, estimate: draft.estimate ?? null, labels: [...(draft.labels || [])] };
+  let subtasks = [];
+  const tplSel = !templates.length ? null : h('select', { class: 'select', 'aria-label': 'Template', onchange: () => {
+    const t = templates.find(x => x.id === +tplSel.value); if (!t) return;
+    const d = t.data;
+    Object.assign(v, { title: d.title || v.title, description: d.description || '', priority: d.priority || 'medium', type: d.type || 'task', estimate: d.estimate ?? null, labels: [...(d.labels || [])], due_date: d.due_in_days != null ? addDays(d.due_in_days) : v.due_date });
+    subtasks = d.subtasks || []; title.value = v.title; desc.value = v.description; paintRow();
+    labelsBox.replaceWith(labelEditor(v.labels, l => (v.labels = l)));
+    if (subtasks.length) note.textContent = `Will also create ${subtasks.length} subtask(s) from the template.`;
+  } }, h('option', { value: '' }, 'Start from a template…'), templates.map(t => h('option', { value: t.id }, t.name)));
   const magic = h('input', { class: 'input', placeholder: 'e.g. "Fix login redirect bug by Friday, assign to Marcus, urgent"', onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); fill(); } } });
   const title = h('input', { class: 'input', value: v.title, placeholder: 'Task title', oninput: () => (v.title = title.value) });
   const desc = h('textarea', { class: 'textarea', placeholder: 'Add context, links, acceptance criteria…', oninput: () => (v.description = desc.value) }, v.description);
@@ -53,7 +64,8 @@ export function createTaskModal({ projectId, status = 'todo', draft = {}, onCrea
   const paintRow = () => {
     const a = userById(v.assignee_id);
     row.replaceChildren(
-      chip(state.statuses.find(s => s.id === v.status).label, statusDot(v.status), el => statusMenu(el, v.status, s => { v.status = s; paintRow(); })),
+      chip(statuses.find(s => s.id === v.status)?.label || v.status, statusDot(v.status, statuses.find(s => s.id === v.status)?.category), el => statusMenu(el, v.status, s => { v.status = s; paintRow(); }, statuses)),
+      chip(TYPE[v.type][1], typeIcon(v.type), el => menu(el, Object.entries(TYPE).map(([id, t]) => ({ node: typeIcon(id), label: t[1], checked: id === v.type, onClick: () => { v.type = id; paintRow(); } })))),
       chip(PRIORITY[v.priority].label, h('i', { style: { width: '8px', height: '8px', background: PRIORITY[v.priority].color, borderRadius: '3px', transform: 'rotate(45deg)' } }), el => priorityMenu(el, v.priority, p => { v.priority = p; paintRow(); })),
       chip(a ? a.name : 'Unassigned', avatar(a, 18), el => assigneeMenu(el, members, v.assignee_id, id => { v.assignee_id = id; paintRow(); })),
       chip(v.due_date ? new Date(v.due_date + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'No due date', icon('calendar', 14), el => dateMenu(el, v.due_date, d => { v.due_date = d; paintRow(); })),
@@ -80,6 +92,7 @@ export function createTaskModal({ projectId, status = 'todo', draft = {}, onCrea
   modal({
     title: `New task · ${project?.name || ''}`, width: 600,
     body: [
+      tplSel ? h('div', { class: 'field' }, h('label', 'Template'), tplSel) : null,
       h('div', { class: 'field' }, h('label', '✨ Describe it'), h('div', { class: 'row' }, magic, fillBtn), note),
       h('div', { class: 'field' }, h('label', 'Title'), title), h('div', { class: 'field' }, h('label', 'Description'), desc),
       row, h('div', { class: 'field' }, h('label', 'Labels'), labelsBox),
@@ -88,7 +101,7 @@ export function createTaskModal({ projectId, status = 'todo', draft = {}, onCrea
       label: 'Create task', kind: 'primary', onClick: async () => {
         v.title = title.value.trim(); v.description = desc.value;
         if (!v.title) { toast('Give the task a title', 'error'); return false; }
-        try { const t = await api.post(`/projects/${projectId}/tasks`, v); onCreated?.(t); toast(`Created ${t.key}`, 'success'); } catch (e) { toast(e.message, 'error'); return false; }
+        try { const t = await api.post(`/projects/${projectId}/tasks`, v); if (subtasks.length) await api.post(`/tasks/${t.id}/subtasks`, { titles: subtasks }).catch(() => {}); onCreated?.(t); toast(`Created ${t.key}`, 'success'); } catch (e) { toast(e.message, 'error'); return false; }
       },
     }],
   });

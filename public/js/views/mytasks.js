@@ -21,7 +21,7 @@ export async function myTasksView(el) {
     const row = x => h('div', { class: 'trow', tabindex: 0, onclick: () => openTask(x.id), onkeydown: e => e.key === 'Enter' && openTask(x.id) },
       h('button', { class: 'check' + (x.status === 'done' ? ' on' : ''), 'aria-label': x.status === 'done' ? 'Reopen' : 'Mark done', onclick: async e => { e.stopPropagation(); await api.patch('/tasks/' + x.id, { status: x.status === 'done' ? 'todo' : 'done' }); render(); } }, x.status === 'done' ? icon('check', 12) : null),
       h('span', { class: 'mono small faint nowrap' }, x.key), h('span', { class: 'grow ellipsis', style: { fontWeight: 550, textDecoration: x.status === 'done' ? 'line-through' : 'none' } }, x.title),
-      h('span', { class: 'small faint hide-sm' }, projectById(x.project_id)?.name || x.project_name), statusDot(x.status), priorityBadge(x.priority, true),
+      h('span', { class: 'small faint hide-sm' }, projectById(x.project_id)?.name || x.project_name), statusDot(x.status, x.status_category), priorityBadge(x.priority, true),
       x.due_date ? h('span', { class: 'due small ' + dueInfo(x.due_date, x.status === 'done').state }, dueInfo(x.due_date, x.status === 'done').label) : null);
     mount(el, h('div', { class: 'page', style: { maxWidth: '980px' } },
       h('div', { class: 'page-head' }, h('div', { class: 'grow' }, h('h1', 'My tasks'), h('p', { class: 'muted' }, open.length ? `${open.length} open across ${new Set(open.map(x => x.project_id)).size} project(s)` : 'Nothing assigned to you.'))),
