@@ -53,6 +53,7 @@ R.get('/api/bootstrap', ({ user }) => ({
   me: user ? me(user) : null,
   statuses: STATUSES,
   ai_mode: AI.aiMode(),
+  demo: !!get("SELECT 1 FROM users WHERE email LIKE '%@demo.taskboard.dev' AND active=1"),
 }), { public: true });
 
 R.post('/api/setup', ({ body, req, res }) => {

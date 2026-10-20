@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { DATA_DIR } from './config.js';
+import { seal, open } from './crypto.js';
 
 export const db = new DatabaseSync(process.env.DB_FILE || path.join(DATA_DIR, 'taskboard.db'));
 
@@ -176,10 +177,11 @@ export const SECRET_KEYS = new Set(['google_client_secret', 'twilio_auth_token',
 export function getSetting(key) {
   const env = process.env[key.toUpperCase()];
   if (env) return env;
-  return get('SELECT value FROM settings WHERE key=?', key)?.value || '';
+  const v = get('SELECT value FROM settings WHERE key=?', key)?.value || '';
+  return SECRET_KEYS.has(key) ? open(v) : v;
 }
 export function setSetting(key, value) {
-  run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, value);
+  run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, SECRET_KEYS.has(key) ? seal(value) : value);
 }
 
 export const parseJSON = (s, fallback) => { try { return JSON.parse(s); } catch { return fallback; } };

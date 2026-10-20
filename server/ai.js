@@ -75,13 +75,15 @@ export function localParseTask(text, { members = [], today = todayStr() } = {}) 
   let rest = ' ' + text + ' ';
   const out = { title: '', description: '', priority: 'medium', assignee_id: null, due_date: null, labels: [], estimate: null };
 
-  const prio = rest.match(/\b(p0|urgent|asap|critical|blocker)\b|\b(p1|high priority|high-priority|important)\b|\b(p3|low priority|low-priority|nice to have)\b/i);
-  if (prio) {
-    out.priority = prio[1] ? 'urgent' : prio[2] ? 'high' : 'low';
-    rest = rest.replace(prio[0], ' ');
-  }
   const bang = rest.match(/!(urgent|high|medium|low)\b/i);
   if (bang) { out.priority = bang[1].toLowerCase(); rest = rest.replace(bang[0], ' '); }
+  else {
+    const prio = rest.match(/\b(p0|urgent|asap|critical|blocker)\b|\b(p1|high priority|high-priority|important)\b|\b(p3|low priority|low-priority|nice to have)\b/i);
+    if (prio) {
+      out.priority = prio[1] ? 'urgent' : prio[2] ? 'high' : 'low';
+      rest = rest.replace(prio[0], ' ');
+    }
+  }
 
   for (const m of rest.matchAll(/#([a-z0-9][\w-]*)/gi)) out.labels.push(m[1].toLowerCase());
   rest = rest.replace(/#[a-z0-9][\w-]*/gi, ' ');
@@ -91,6 +93,7 @@ export function localParseTask(text, { members = [], today = todayStr() } = {}) 
     const h = at[1].toLowerCase();
     const u = members.find(m => handleOf(m.name) === h) || members.find(m => m.name.toLowerCase().split(' ')[0] === h);
     if (u) { out.assignee_id = u.id; rest = rest.replace(at[0], ' '); }
+    else { out.description = `Requested assignee: ${at[0]} (not a member of this project).`; rest = rest.replace(at[0], ' '); }
   }
   const asg = rest.match(/\b(?:assign(?:ed)? to|for) ([a-z]+)\b/i);
   if (asg && !out.assignee_id) {

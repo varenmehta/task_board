@@ -232,3 +232,27 @@ test('admin settings mask secrets', async () => {
   assert.equal(s.google_client_id, 'abc');
   await admin.put('/api/settings', { anthropic_api_key: '__clear__' });
 });
+
+test('parser: !priority shorthand leaves a clean title', () => {
+  const p = localParseTask('Add audit logging tomorrow !urgent #security 4h', { members: [], today: '2026-10-20' });
+  assert.equal(p.title, 'Add audit logging');
+  assert.equal(p.priority, 'urgent');
+  assert.equal(localParseTask('ship it !low', { members: [], today: '2026-10-20' }).title, 'Ship it');
+});
+
+test('secrets are encrypted at rest', async () => {
+  await admin.put('/api/settings', { twilio_auth_token: 'tok_super_secret' });
+  const raw = get("SELECT value FROM settings WHERE key='twilio_auth_token'").value;
+  assert.ok(raw.startsWith('enc:v1:') && !raw.includes('tok_super_secret'));
+  const { getSetting } = await import('../server/db.js');
+  assert.equal(getSetting('twilio_auth_token'), 'tok_super_secret');
+  const { seal, open } = await import('../server/crypto.js');
+  assert.equal(open(seal('hello')), 'hello');
+  assert.equal(open('enc:v1:garbage'), '');
+});
+
+test('parser: unresolved @mention is stripped from title and noted', () => {
+  const p = localParseTask('Deploy canary @ghost friday', { members: [{ id: 1, name: 'Priya Nair' }], today: '2026-10-20' });
+  assert.equal(p.title, 'Deploy canary');
+  assert.match(p.description, /@ghost/);
+});

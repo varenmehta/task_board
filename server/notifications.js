@@ -1,5 +1,5 @@
 import { all, get, run, insert, parseJSON, getSetting } from './db.js';
-import { bus, pushTo } from './events.js';
+import { bus, pushTo, flags } from './events.js';
 import { sendEmail, sendPhone, emailHtml } from './delivery.js';
 import { handleOf, esc, clip } from './util.js';
 import { teamLeads } from './access.js';
@@ -51,6 +51,7 @@ const appUrl = path => `${getSetting('base_url') || process.env.BASE_URL || `htt
  * opts: { title, body, task, link, cta }
  */
 export function notify(userId, event, opts) {
+  if (flags.quiet) return;
   const user = get('SELECT * FROM users WHERE id=? AND active=1', userId);
   if (!user) return;
   const prefs = getPrefs(user);

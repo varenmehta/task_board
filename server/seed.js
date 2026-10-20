@@ -2,11 +2,17 @@
 import { run, insert, get } from './db.js';
 import { hashPassword } from './auth.js';
 import { pickColor, todayStr, addDays } from './util.js';
-import { createTask, updateTask, addComment } from './tasks.js';
+import { createTask, addComment } from './tasks.js';
+import { flags } from './events.js';
 
 export const DEMO_PASSWORD = 'demo1234';
 
 export function seedDemo(admin) {
+  flags.quiet = true;
+  try { return seed(admin); } finally { flags.quiet = false; }
+}
+
+function seed(admin) {
   const hash = hashPassword(DEMO_PASSWORD);
   const mk = (name, email, role, title, i) => insert('INSERT INTO users(email,name,password_hash,role,color,title) VALUES(?,?,?,?,?,?)', email, name, hash, role, pickColor(i + 2), title);
   const priya = mk('Priya Nair', 'priya@demo.taskboard.dev', 'manager', 'Engineering Manager', 1);

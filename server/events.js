@@ -2,6 +2,8 @@ import { EventEmitter } from 'node:events';
 
 // Domain bus: notifications and automations subscribe to task changes here.
 export const bus = new EventEmitter();
+// Set while importing sample data so it doesn't spam notifications.
+export const flags = { quiet: false };
 bus.setMaxListeners(50);
 
 // Live push to connected browsers (Server-Sent Events).

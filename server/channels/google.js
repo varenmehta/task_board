@@ -1,6 +1,7 @@
 // Gmail integration via Google OAuth (no SDK, plain fetch).
 import { get, run, all, getSetting, parseJSON, insert } from '../db.js';
 import { HttpError } from '../util.js';
+import { seal, open } from '../crypto.js';
 
 export const SCOPES = [
   'openid', 'email',
@@ -38,10 +39,10 @@ export async function exchangeCode(code, base) {
 
 export const getIntegration = userId => {
   const row = get('SELECT data FROM integrations WHERE user_id=? AND provider=?', userId, 'google');
-  return row ? parseJSON(row.data, null) : null;
+  return row ? parseJSON(open(row.data), null) : null;
 };
 export const saveIntegration = (userId, data) =>
-  run('INSERT INTO integrations(user_id,provider,data) VALUES(?,?,?) ON CONFLICT(user_id,provider) DO UPDATE SET data=excluded.data', userId, 'google', JSON.stringify(data));
+  run('INSERT INTO integrations(user_id,provider,data) VALUES(?,?,?) ON CONFLICT(user_id,provider) DO UPDATE SET data=excluded.data', userId, 'google', seal(JSON.stringify(data)));
 
 async function accessToken(userId) {
   const g = getIntegration(userId);

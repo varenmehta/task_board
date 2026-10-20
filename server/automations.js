@@ -108,7 +108,6 @@ export function seedDefaultRules(createdBy) {
     { type: 'notify', to: 'leads', message: '⏰ {key} is overdue' },
     { type: 'add_label', value: 'overdue' },
   ]);
-  add('Ping assignee when work is due within 24h', 'due_soon', {}, [{ type: 'notify', to: 'assignee', message: '📅 {key} is due soon' }]);
   add('Tell the reporter when work lands in review', 'status_changed', { to_status: 'review' }, [{ type: 'notify', to: 'reporter', message: '👀 {key} is ready for review' }], 1);
   add('Bump priority of urgent-labelled bugs', 'task_created', { label: 'bug' }, [{ type: 'set_priority', value: 'high' }], 0);
 }
