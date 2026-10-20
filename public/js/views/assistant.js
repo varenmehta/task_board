@@ -2,6 +2,7 @@ import { h, mount, icon, toast, todayStr, renderMarkdownLite, avatar, priorityBa
 import { api } from '../api.js';
 import { state, userById } from '../state.js';
 import { createTaskModal } from './pickers.js';
+import { voiceButton } from '../voice.js';
 import { openTask } from './task.js';
 
 let panel = null;
@@ -19,7 +20,7 @@ export function toggleAssistant(prefill) {
   const send = h('button', { class: 'btn primary', 'aria-label': 'Send', onclick: () => ask() }, icon('send', 16));
   panel = h('div', { class: 'assistant', role: 'dialog', 'aria-label': 'AI assistant' },
     h('div', { class: 'as-head' }, icon('sparkles', 20), h('div', { class: 'grow' }, h('div', { style: { fontWeight: 700 } }, 'AI assistant'), h('div', { style: { fontSize: '12px', opacity: .85 } }, state.aiMode === 'claude' ? 'Powered by Claude' : 'Offline mode · add an API key for full AI')), h('button', { class: 'icon-btn', 'aria-label': 'Close', onclick: () => { panel.remove(); panel = null; } }, icon('x', 18))),
-    body, h('div', { class: 'as-foot' }, input, send));
+    body, h('div', { class: 'as-foot' }, input, voiceButton(() => input) || '', send));
   document.body.append(panel);
 
   const bot = (content, extra) => { body.append(h('div', { class: 'msg bot' }, typeof content === 'string' ? renderMarkdownLite(content) : content), extra || ''); body.scrollTop = body.scrollHeight; };

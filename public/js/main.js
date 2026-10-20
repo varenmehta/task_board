@@ -13,6 +13,7 @@ import { openTask } from './views/task.js';
 import { toggleAssistant } from './views/assistant.js';
 import { projectModal, teamModal } from './views/team.js';
 import { reportsView } from './views/reports.js';
+import { capacityView } from './views/capacity.js';
 import { openPalette, shortcutsHelp } from './views/palette.js';
 import { fmtDuration } from './dom.js';
 
@@ -104,7 +105,7 @@ function buildShell() {
   let gPending = null;
   document.addEventListener('keydown', e => {
     if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || document.activeElement.isContentEditable || e.metaKey || e.ctrlKey || e.altKey || document.querySelector('.modal-back, .popover')) return;
-    if (gPending) { const to = { d: '#/', m: '#/my-tasks', i: '#/inbox', r: '#/reports', t: '#/team', a: '#/automations', s: '#/settings' }[e.key]; clearTimeout(gPending); gPending = null; if (to) { e.preventDefault(); location.hash = to; } return; }
+    if (gPending) { const to = { d: '#/', m: '#/my-tasks', i: '#/inbox', r: '#/reports', c: '#/capacity', t: '#/team', a: '#/automations', s: '#/settings' }[e.key]; clearTimeout(gPending); gPending = null; if (to) { e.preventDefault(); location.hash = to; } return; }
     if (e.key === 'g') gPending = setTimeout(() => (gPending = null), 900);
     if (e.key === '?') { e.preventDefault(); shortcutsHelp(); }
   });
@@ -131,6 +132,7 @@ export function renderSidebar() {
     h('div', { id: 'side-projects' }),
     h('div', { class: 'nav-title' }, 'Workspace'),
     state.me.role !== 'guest' ? navItem('#/reports', 'barChart', 'Reports') : null,
+    state.me.role !== 'guest' ? navItem('#/capacity', 'clock', 'Capacity') : null,
     navItem('#/team', 'users', 'Teams & people'),
     navItem('#/automations', 'zap', 'Automations'),
     navItem('#/settings', 'settings', 'Settings'));
@@ -220,6 +222,7 @@ const routes = [
   [/^#\/my-tasks/, () => myTasksView],
   [/^#\/inbox/, () => inboxView],
   [/^#\/reports/, () => reportsView],
+  [/^#\/capacity/, () => capacityView],
   [/^#\/team/, () => teamView],
   [/^#\/automations/, () => automationsView],
   [/^#\/settings(?:\/(\w+))?/, m => (el) => settingsView(el, m[1] || 'profile')],

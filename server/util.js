@@ -19,3 +19,19 @@ export const pickColor = n => COLORS[Math.abs(n) % COLORS.length];
 export const handleOf = name => String(name || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '.').replace(/^\.|\.$/g, '');
 export const clip = (s, n) => (String(s ?? '').length > n ? String(s).slice(0, n - 1) + '…' : String(s ?? ''));
 export const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// minimal, safe Markdown → HTML for emails (headings, bullets, **bold**, > quotes); everything is escaped first
+export function mdToHtml(md) {
+  const inline = t => esc(t).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>').replace(/_([^_]+)_/g, '<i>$1</i>');
+  const out = []; let list = false;
+  for (const line of String(md).split('\n')) {
+    const li = line.match(/^\s*[-*•]\s+(.*)$/);
+    if (li) { if (!list) { out.push('<ul style="padding-left:20px;margin:6px 0">'); list = true; } out.push(`<li>${inline(li[1])}</li>`); continue; }
+    if (list) { out.push('</ul>'); list = false; }
+    const h = line.match(/^#{1,3}\s+(.*)$/);
+    if (h) out.push(`<h3 style="margin:16px 0 6px">${inline(h[1])}</h3>`);
+    else if (line.trim()) out.push(`<p style="margin:6px 0">${inline(line)}</p>`);
+  }
+  if (list) out.push('</ul>');
+  return out.join('');
+}

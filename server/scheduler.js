@@ -8,7 +8,9 @@ import { listAssigned, getTask, createTask } from './tasks.js';
 import { projectMembers, visibleProjects } from './access.js';
 import { googleConfigured, getIntegration, fetchLabelledEmails, markRead, fetchReplyCandidates, senderUserId } from './channels/google.js';
 import { applyReply } from './emailreply.js';
-import { briefingBlurb, emailToTask } from './ai.js';
+import { briefingBlurb, emailToTask, stakeholderDigest, localRisks } from './ai.js';
+import { listProjectTasks } from './tasks.js';
+import { mdToHtml } from './util.js';
 import { getSetting } from './db.js';
 import { runRecurrences } from './recurring.js';
 import { snapshotActiveSprints } from './planning.js';
@@ -108,6 +110,38 @@ export async function pollInbox() {
   return created;
 }
 
+// Monday-morning (UTC) AI-written project update for stakeholders listed on the project.
+export async function sendProjectDigest(project, { force = false } = {}) {
+  const emails = parseJSON(project.digest_emails, []);
+  if (!emails.length) return { sent: 0 };
+  const today = todayStr(), weekAgo = addDays(today, -7);
+  const tasks = listProjectTasks(project.id);
+  const members = projectMembers(project);
+  const d = await stakeholderDigest({
+    project,
+    done: tasks.filter(t => t.status === 'done' && t.completed_at && t.completed_at.slice(0, 10) >= weekAgo),
+    inProgress: tasks.filter(t => t.status_category === 'doing'),
+    upcoming: tasks.filter(t => t.status !== 'done' && t.due_date && t.due_date >= today && t.due_date <= addDays(today, 14)).sort((a, b) => a.due_date.localeCompare(b.due_date)),
+    risks: localRisks({ tasks, members, today }),
+  });
+  let sent = 0;
+  for (const to of emails) {
+    const r = await sendEmail({ to, subject: `${project.name} — weekly update (${today})`, text: d.text.replace(/[*#]/g, ''), html: emailHtml({ heading: `${project.name} — weekly update`, body: mdToHtml(d.text) }) });
+    if (r !== 'skipped') sent++;
+  }
+  void force;
+  return { sent, text: d.text };
+}
+export async function runWeeklyDigests(now = new Date()) {
+  if (now.getUTCDay() !== 1 || now.getUTCHours() < 9) return 0;
+  let n = 0;
+  for (const p of all("SELECT * FROM projects WHERE archived=0 AND digest_emails<>'[]'")) {
+    if (!once(`weekly:${p.id}:${now.toISOString().slice(0, 10)}`)) continue;
+    await sendProjectDigest(p); n++;
+  }
+  return n;
+}
+
 // Replies to notification emails land in the workspace sender's inbox; turn them into comments.
 export async function pollReplies() {
   const sender = googleConfigured() ? senderUserId() : null;
@@ -134,6 +168,7 @@ export function startScheduler() {
     safe('digests', () => runDigests());
     safe('inbox', () => (tick % 2 === 0 ? pollInbox() : 0));
     safe('replies', () => (tick % 2 === 1 ? pollReplies() : 0));
+    safe('weekly', () => (tick % 10 === 3 ? runWeeklyDigests() : 0));
     safe('recurring', () => (tick % 5 === 2 ? runRecurrences() : 0));
     if (tick % 60 === 0) { safe('prune', pruneOutbox); safe('snapshots', snapshotActiveSprints); }
   };

@@ -285,3 +285,203 @@ Shipped items:\n${done.map(t => `${t.ref} | ${t.type} | ${t.title}`).join('\n')}
     return { ai: true, notes: text };
   } catch (e) { return { ai: false, warning: e.message, notes: local }; }
 }
+
+// =====================================================================
+// Phase 4 — triage, duplicates, notes → tasks, natural-language search, sprint planning
+// =====================================================================
+const STOP = new Set('the a an and or of to for in on at by with from is are be this that it as we our i you your my me please need needs should would could can add fix update make new task issue'.split(' '));
+const words = s => String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !STOP.has(w)).map(w => w.replace(/(ing|ed|es|s)$/, ''));
+
+// ---------- auto-triage ----------
+const LABEL_RULES = [['bug', /\b(bug|crash|error|exception|regression|broken|fails?|failing|500|stack ?trace)\b/i], ['security', /\b(security|vulnerab|xss|csrf|cve|auth bypass|leak|token)\b/i], ['performance', /\b(slow|latency|perf|performance|timeout|memory|cpu)\b/i], ['docs', /\b(docs?|documentation|readme|guide)\b/i], ['ui', /\b(ui|ux|css|layout|button|modal|style|responsive)\b/i], ['infra', /\b(deploy|ci|pipeline|kubernetes|terraform|docker|infra|aws|gcp)\b/i], ['tech-debt', /\b(refactor|cleanup|tech debt|deprecat|migrat)\b/i]];
+export function localTriage(task, { members = [], workload = {} } = {}) {
+  const t = `${task.title} ${task.description || ''}`;
+  const priority = /\b(outage|prod(uction)? (down|issue)|data loss|security|critical|urgent|blocker|p0)\b/i.test(t) ? 'urgent' : /\b(bug|regression|customer|broken|crash|fail)/i.test(t) ? 'high' : /\b(refactor|cleanup|docs?|typo|nice to have|polish)\b/i.test(t) ? 'low' : 'medium';
+  const labels = LABEL_RULES.filter(([, re]) => re.test(t)).map(([l]) => l).slice(0, 3);
+  const type = labels.includes('bug') ? 'bug' : 'task';
+  const least = [...members].sort((a, b) => (workload[a.id] || 0) - (workload[b.id] || 0))[0];
+  return { priority, labels, type, assignee_id: least?.id ?? null, reason: `Keywords suggest ${priority} priority${labels.length ? ` (${labels.join(', ')})` : ''}${least ? `; ${least.name} has the lightest workload.` : '.'}` };
+}
+export async function triage(task, ctx) {
+  const local = localTriage(task, ctx);
+  if (aiMode() === 'local') return { ...local, ai: false };
+  try {
+    const j = await ask(`Triage this new software task. Today ${ctx.today}.
+Title: ${task.title}\nDescription: ${task.description || '(none)'}
+Team (open tasks): ${ctx.members.map(m => `${m.name} [id ${m.id}] ${ctx.workload[m.id] || 0}`).join('; ')}
+Return JSON: {"priority":"urgent|high|medium|low","type":"task|bug|story","labels":string[] (max 3, lowercase),"assignee_id":number|null (balance workload; null if unclear),"reason":string (one sentence)}`, { json: true });
+    return { ai: true, priority: ['urgent', 'high', 'medium', 'low'].includes(j.priority) ? j.priority : local.priority, type: ['task', 'bug', 'story'].includes(j.type) ? j.type : local.type, labels: Array.isArray(j.labels) ? j.labels.slice(0, 3).map(l => String(l).toLowerCase()) : local.labels, assignee_id: ctx.members.some(m => m.id === j.assignee_id) ? j.assignee_id : local.assignee_id, reason: j.reason || local.reason };
+  } catch { return { ...local, ai: false }; }
+}
+
+// ---------- duplicates ----------
+const trigrams = s => { const t = ` ${String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `; const set = new Set(); for (let i = 0; i < t.length - 2; i++) set.add(t.slice(i, i + 3)); return set; };
+const dice = (a, b) => { if (!a.size || !b.size) return 0; let n = 0; for (const x of a) if (b.has(x)) n++; return 2 * n / (a.size + b.size); };
+export function findDuplicates(title, description, tasks, { limit = 5, threshold = 0.5 } = {}) {
+  const tw = new Set(words(title + ' ' + (description || '').slice(0, 200))), tg = trigrams(title);
+  return tasks.map(t => {
+    const ow = new Set(words(t.title + ' ' + (t.description || '').slice(0, 200)));
+    const inter = [...tw].filter(w => ow.has(w)).length;
+    const jac = tw.size && ow.size ? inter / (tw.size + ow.size - inter) : 0;
+    const score = Math.max(dice(tg, trigrams(t.title)), jac * 1.15);
+    return { id: t.id, key: t.key, title: t.title, status: t.status, status_category: t.status_category, score: Math.round(Math.min(1, score) * 100) / 100 };
+  }).filter(x => x.score >= threshold).sort((a, b) => b.score - a.score).slice(0, limit);
+}
+
+// ---------- meeting notes → tasks ----------
+export function localExtract(text, { members = [], today = todayStr() } = {}) {
+  const out = [];
+  for (let line of String(text).split(/\n+/)) {
+    line = line.trim();
+    if (!line) continue;
+    const m = line.match(/^(?:[-*•]\s*(?:\[[ x]?\]\s*)?|\d+[.)]\s+)?(?:(?:todo|to-do|action(?: item)?|ai|follow[- ]?up)\s*[:\-]\s*)(.+)$/i) || line.match(/^[-*•]\s*\[ \]\s*(.+)$/) || line.match(/^(?:@[\w.]+|[A-Z][a-z]+)\s+(?:to|will|should|needs? to)\s+.+$/) && [null, line];
+    if (!m) continue;
+    const parsed = localParseTask(m[1].replace(/^(?:([A-Z][a-z]+)\s+(?:to|will|should|needs? to)\s+)/, (_, n) => `@${n.toLowerCase()} `), { members, today });
+    parsed.title = parsed.title.replace(/^(?:to|will|should|needs? to)\s+/i, '');
+    parsed.title = parsed.title.charAt(0).toUpperCase() + parsed.title.slice(1);
+    if (parsed.title.length >= 3) out.push(parsed);
+  }
+  return out.slice(0, 25);
+}
+export async function extractTasks(text, ctx) {
+  const local = localExtract(text, ctx);
+  if (aiMode() === 'local') return { ai: false, tasks: local };
+  try {
+    const j = await ask(`Extract the concrete action items from these meeting notes as tasks. Today is ${ctx.today}.
+Team: ${ctx.members.map(m => `${m.name} [id ${m.id}]`).join(', ') || 'unknown'}.
+Notes:\n"""${clip(text, 8000)}"""
+Return JSON: {"tasks":[{"title": imperative <=80 chars, "description": string, "assignee_id": number|null (only if someone is clearly named), "due_date":"YYYY-MM-DD"|null, "priority":"urgent|high|medium|low"}]}. Skip discussion that isn't an action. Max 20.`, { json: true, maxTokens: 1800 });
+    return { ai: true, tasks: (j.tasks || []).slice(0, 20).map(t => ({ title: clip(t.title, 200), description: t.description || '', assignee_id: ctx.members.some(m => m.id === t.assignee_id) ? t.assignee_id : null, due_date: /^\d{4}-\d{2}-\d{2}$/.test(t.due_date || '') ? t.due_date : null, priority: ['urgent', 'high', 'medium', 'low'].includes(t.priority) ? t.priority : 'medium', labels: [], estimate: null })) };
+  } catch (e) { return { ai: false, warning: e.message, tasks: local }; }
+}
+
+// ---------- natural-language search ----------
+export function localFilter(query, { members = [], me, today = todayStr() }) {
+  const q = ` ${query.toLowerCase()} `;
+  const f = {}, explain = [];
+  const used = [];
+  const take = (re, fn) => { const m = q.match(re); if (m) { fn(m); used.push(m[0]); } return !!m; };
+  if (take(/\bunassigned\b/, () => { f.unassigned = true; explain.push('unassigned'); })) { /* done */ }
+  else if (take(/\b(?:my|mine|assigned to me|i own)\b/, () => { f.assignee_ids = [me?.id]; explain.push('assigned to you'); })) { /* done */ }
+  else {
+    for (const m of members) {
+      const first = m.name.toLowerCase().split(' ')[0], full = m.name.toLowerCase();
+      if (new RegExp(`\\b(?:assigned to |by |for |owned by )?(?:${full}|${first})(?:'s)?\\b`).test(q) && q.includes(first)) { (f.assignee_ids ||= []).push(m.id); explain.push(`assigned to ${m.name}`); used.push(first); }
+    }
+  }
+  take(/\b(urgent|high|medium|low)(?:[- ]priority)?\b/, m => { f.priority = m[1]; explain.push(`${m[1]} priority`); });
+  take(/\bp([0-3])\b/, m => { f.priority = ['urgent', 'high', 'medium', 'low'][+m[1]]; explain.push(`${f.priority} priority`); });
+  if (take(/\b(?:done|completed|shipped|finished|closed|resolved)\b/, () => { f.status_category = 'done'; explain.push('done'); })) { /* */ }
+  else if (take(/\b(?:in progress|doing|started|being worked on)\b/, () => { f.status = 'in_progress'; explain.push('in progress'); })) { /* */ }
+  else if (take(/\bin review|awaiting review|needs review\b/, () => { f.status = 'review'; explain.push('in review'); })) { /* */ }
+  else if (take(/\b(?:open|not done|unfinished|outstanding)\b/, () => { f.open = true; explain.push('not done'); })) { /* */ }
+  take(/\b(bugs?|epics?|stor(?:y|ies))\b/, m => { f.type = m[1].startsWith('bug') ? 'bug' : m[1].startsWith('epic') ? 'epic' : 'story'; explain.push(`${f.type}s`); });
+  take(/\boverdue|late|past due\b/, () => { f.overdue = true; explain.push('overdue'); });
+  take(/\b(?:blocked)\b/, () => { f.blocked = true; explain.push('blocked'); });
+  const dow = new Date(today + 'T00:00:00Z').getUTCDay();
+  const monday = addDays(today, -((dow + 6) % 7));
+  if (take(/\bdue today\b/, () => { f.due_from = f.due_to = today; explain.push('due today'); })) { /* */ }
+  else if (take(/\bdue tomorrow\b/, () => { f.due_from = f.due_to = addDays(today, 1); explain.push('due tomorrow'); })) { /* */ }
+  else if (take(/\bdue (?:this week|by (?:the )?end of (?:the )?week|soon)\b/, () => { f.due_from = today; f.due_to = addDays(monday, 6); explain.push('due this week'); })) { /* */ }
+  else if (take(/\bdue next week\b/, () => { f.due_from = addDays(monday, 7); f.due_to = addDays(monday, 13); explain.push('due next week'); })) { /* */ }
+  if (take(/\b(?:last week)\b/, () => { f.range_from = addDays(monday, -7); f.range_to = addDays(monday, -1); explain.push('last week'); })) { /* */ }
+  else if (take(/\b(?:this week)\b/, () => { if (!f.due_from) { f.range_from = monday; f.range_to = addDays(monday, 6); explain.push('this week'); } })) { /* */ }
+  else if (take(/\b(?:in the )?last (\d+) days\b/, m => { f.range_from = addDays(today, -Number(m[1])); f.range_to = today; explain.push(`last ${m[1]} days`); })) { /* */ }
+  else if (take(/\byesterday\b/, () => { f.range_from = f.range_to = addDays(today, -1); explain.push('yesterday'); })) { /* */ }
+  for (const m of query.matchAll(/#([\w-]+)/g)) { (f.labels ||= []).push(m[1].toLowerCase()); explain.push('#' + m[1]); used.push(m[0]); }
+  take(/\b(?:label(?:led)?|tagged)\s+([\w-]+)/, m => { (f.labels ||= []).push(m[1]); explain.push('#' + m[1]); });
+  let rest = q; for (const u of used) rest = rest.replace(u, ' ');
+  const text = words(rest.replace(/\b(show|list|find|tasks?|tickets?|issues?|all|that|which|what|who|where|how many|are|were|have|has|got|any|there|things|work)\b/g, ' ')).join(' ');
+  if (text) { f.text = text; explain.push(`matching “${text}”`); }
+  return { filter: f, explain };
+}
+
+export function applyFilter(tasks, f, { me, today = todayStr() } = {}) {
+  const inRange = (iso, a, b) => iso && iso.slice(0, 10) >= a && iso.slice(0, 10) <= b;
+  const textWords = f.text ? f.text.split(' ') : [];
+  return tasks.filter(t => {
+    if (f.unassigned && t.assignee_id) return false;
+    if (f.assignee_ids?.length && !f.assignee_ids.includes(t.assignee_id)) return false;
+    if (f.priority && t.priority !== f.priority) return false;
+    if (f.status_category && t.status_category !== f.status_category) return false;
+    if (f.status && t.status !== f.status) return false;
+    if (f.open && t.status === 'done') return false;
+    if (f.type && t.type !== f.type) return false;
+    if (f.overdue && !(t.due_date && t.due_date < today && t.status !== 'done')) return false;
+    if (f.blocked && !t.blocked_by_open) return false;
+    if (f.due_from && !(t.due_date && t.due_date >= f.due_from && t.due_date <= f.due_to)) return false;
+    if (f.range_from) { const when = f.status_category === 'done' ? t.completed_at : (t.completed_at || t.updated_at); if (!inRange(when, f.range_from, f.range_to)) return false; }
+    if (f.labels?.length && !f.labels.every(l => t.labels.includes(l))) return false;
+    if (textWords.length) { const hay = words(t.title + ' ' + t.description + ' ' + t.labels.join(' ')).join(' '); if (!textWords.every(w => hay.includes(w))) return false; }
+    return true;
+  });
+}
+
+export async function nlSearch(query, ctx) {
+  const local = localFilter(query, ctx);
+  if (aiMode() === 'local') return { ai: false, ...local };
+  try {
+    const j = await ask(`Convert this question about a task board into a filter. Today is ${ctx.today}. Current user: ${ctx.me?.name} [id ${ctx.me?.id}].
+Team: ${ctx.members.map(m => `${m.name} [id ${m.id}]`).join(', ')}
+Question: "${query}"
+Return JSON using only these optional keys: {"assignee_ids":number[],"unassigned":boolean,"priority":"urgent|high|medium|low","status_category":"todo|doing|done","status":string,"open":boolean,"type":"task|bug|story|epic","overdue":boolean,"blocked":boolean,"due_from":"YYYY-MM-DD","due_to":"YYYY-MM-DD","range_from":"YYYY-MM-DD","range_to":"YYYY-MM-DD" (for when work was completed/changed),"labels":string[],"text":string (keywords),"explain":string[] (short human-readable pieces)}`, { json: true });
+    const f = {};
+    for (const k of ['unassigned', 'open', 'overdue', 'blocked']) if (j[k] === true) f[k] = true;
+    if (Array.isArray(j.assignee_ids)) f.assignee_ids = j.assignee_ids.filter(id => ctx.members.some(m => m.id === id));
+    if (['urgent', 'high', 'medium', 'low'].includes(j.priority)) f.priority = j.priority;
+    if (['todo', 'doing', 'done'].includes(j.status_category)) f.status_category = j.status_category;
+    if (typeof j.status === 'string') f.status = j.status.slice(0, 24);
+    if (['task', 'bug', 'story', 'epic'].includes(j.type)) f.type = j.type;
+    for (const k of ['due_from', 'due_to', 'range_from', 'range_to']) if (/^\d{4}-\d{2}-\d{2}$/.test(j[k] || '')) f[k] = j[k];
+    if (f.due_from && !f.due_to) f.due_to = f.due_from;
+    if (f.range_from && !f.range_to) f.range_to = ctx.today;
+    if (Array.isArray(j.labels)) f.labels = j.labels.map(l => String(l).toLowerCase()).slice(0, 5);
+    if (typeof j.text === 'string' && j.text.trim()) f.text = words(j.text).join(' ');
+    return { ai: true, filter: f, explain: Array.isArray(j.explain) && j.explain.length ? j.explain.slice(0, 8).map(String) : local.explain };
+  } catch { return { ai: false, ...local }; }
+}
+
+// ---------- sprint planning ----------
+export function localSprintPlan({ backlog, capacity, taskCapacity = null }) {
+  const rank = { urgent: 0, high: 1, medium: 2, low: 3 };
+  const order = [...backlog].filter(t => t.type !== 'epic' && !t.blocked_by_open).sort((a, b) => rank[a.priority] - rank[b.priority] || (a.due_date || '9') .localeCompare(b.due_date || '9') || a.number - b.number);
+  const budget = capacity * 0.85; // leave slack for interruptions
+  let used = 0; const picks = [];
+  for (const t of order) {
+    const est = t.estimate || 3;
+    if (used + est > budget) continue;
+    used += est;
+    picks.push({ id: t.id, key: t.key, title: t.title, estimate: est, reason: `${t.priority} priority${t.due_date ? `, due ${t.due_date}` : ''}${t.estimate ? '' : ' (estimate assumed 3h)'}` });
+    if (taskCapacity && picks.length >= taskCapacity) break;
+  }
+  return { picks, planned: Math.round(used * 10) / 10, budget: Math.round(budget * 10) / 10 };
+}
+export async function sprintPlan(ctx) {
+  const local = localSprintPlan(ctx);
+  const summary = `Capacity ${ctx.capacity}h across ${ctx.people} people${ctx.velocity ? ` (recent velocity ${Math.round(ctx.velocity)}h)` : ''}. Plan: ${local.picks.length} tasks, ${local.planned}h of a ${local.budget}h budget (85% of capacity).`;
+  if (aiMode() === 'local' || !local.picks.length) return { ai: false, summary, ...local };
+  try {
+    const text = await ask(`You are planning a sprint. ${summary}
+Selected tasks:\n${local.picks.map(p => `${p.key} | ${p.title} | ${p.estimate}h | ${p.reason}`).join('\n')}
+Write 2 sentences: is the scope realistic, and what is the main risk? Be specific.`, { maxTokens: 160 });
+    return { ai: true, summary: `${summary} ${text}`, ...local };
+  } catch { return { ai: false, summary, ...local }; }
+}
+
+// ---------- weekly stakeholder digest ----------
+export async function stakeholderDigest({ project, done, inProgress, upcoming, risks }) {
+  const lines = [`## ${project.name} — weekly update`, '', `**Shipped this week (${done.length})**`, ...(done.length ? done.slice(0, 10).map(t => `- ${t.title} (${t.key})`) : ['- Nothing completed this week']), '',
+    `**In flight (${inProgress.length})**`, ...inProgress.slice(0, 8).map(t => `- ${t.title} (${t.key})`), '', `**Coming up**`, ...(upcoming.length ? upcoming.slice(0, 6).map(t => `- ${t.title} — due ${t.due_date}`) : ['- No dated work scheduled']), '',
+    ...(risks.length ? ['**Watch-outs**', ...risks.slice(0, 5).map(r => `- ${r.reason}`)] : [])];
+  const local = lines.join('\n');
+  if (aiMode() === 'local') return { ai: false, text: local };
+  try {
+    const text = await ask(`Write a concise weekly stakeholder update (Markdown, <200 words, no fluff) for project "${project.name}".
+Shipped: ${done.map(t => `${t.key} ${t.title}`).join('; ') || 'nothing'}
+In progress: ${inProgress.map(t => `${t.key} ${t.title}`).join('; ') || 'nothing'}
+Upcoming: ${upcoming.map(t => `${t.key} ${t.title} (due ${t.due_date})`).join('; ') || 'none'}
+Risks: ${risks.map(r => r.reason).join('; ') || 'none'}
+Sections: Highlights, In progress, Next, Risks. Only use the facts above.`, { maxTokens: 600 });
+    return { ai: true, text };
+  } catch { return { ai: false, text: local }; }
+}

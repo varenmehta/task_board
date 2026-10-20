@@ -12,6 +12,8 @@ import * as REC from './recurring.js';
 import * as PLAN from './planning.js';
 import { report, exportCsv } from './reports.js';
 import * as TOK from './tokens.js';
+import * as CAP from './capacity.js';
+import { sendProjectDigest } from './scheduler.js';
 import * as WH from './webhooks.js';
 import * as HOOKS from './hooks.js';
 import * as ICS from './ics.js';
@@ -150,9 +152,10 @@ R.patch('/api/me', ({ user, body }) => {
 R.put('/api/me/prefs', ({ user, body }) => {
   const cur = getPrefs(user);
   const next = { ...cur };
-  for (const k of ['phone_channel', 'phone_urgent_only', 'digest_hour', 'digest_weekdays_only', 'tz_offset', 'email_to_task', 'default_project_id']) if (k in body) next[k] = body[k];
+  for (const k of ['capacity_hours', 'phone_channel', 'phone_urgent_only', 'digest_hour', 'digest_weekdays_only', 'tz_offset', 'email_to_task', 'default_project_id']) if (k in body) next[k] = body[k];
   if (!['sms', 'whatsapp'].includes(next.phone_channel)) next.phone_channel = 'sms';
   next.digest_hour = Math.max(0, Math.min(23, Number(next.digest_hour) || 9));
+  if ('capacity_hours' in body) next.capacity_hours = Math.max(1, Math.min(60, Number(body.capacity_hours) || CAP.DEFAULT_WEEK_HOURS));
   next.tz_offset = Math.max(-840, Math.min(840, Number(next.tz_offset) || 0));
   if (body.matrix) for (const ev of Object.keys(EVENTS)) if (body.matrix[ev]) {
     next.matrix[ev] = { app: !!body.matrix[ev].app, email: !!body.matrix[ev].email, phone: !!body.matrix[ev].phone };
@@ -765,13 +768,61 @@ R.post('/api/ai/suggest', async ({ user, body }) => {
   const c = await aiContext(user, t.project_id, body.today);
   const workload = {};
   for (const x of all(`SELECT assignee_id a, COUNT(*) n FROM tasks WHERE status<>'done' AND assignee_id IS NOT NULL GROUP BY assignee_id`)) workload[x.a] = x.n;
-  return AI.suggest({ task: t, members: c.members, workload, today: c.today });
+  const r = await AI.suggest({ task: t, members: c.members, workload, today: c.today });
+  const cal = CAP.calibration(r.assignee_id || t.assignee_id) || CAP.calibration(null);
+  if (cal && (cal.factor > 1.2 || cal.factor < 0.8)) {
+    r.calibration = `Your team's finished work took ${cal.factor}× its estimate (${cal.samples} tasks) — a calibrated estimate would be ~${Math.round((r.estimate || t.estimate || 4) * cal.factor * 2) / 2}h.`;
+    r.calibrated_estimate = Math.round((r.estimate || t.estimate || 4) * cal.factor * 2) / 2;
+  }
+  return r;
 });
 R.post('/api/ai/risks', async ({ user, body }) => AI.risks(await aiContext(user, body.project_id, body.today)));
 R.post('/api/ai/summary', async ({ user, body }) => AI.summary(await aiContext(user, body.project_id, body.today)));
 R.post('/api/ai/chat', async ({ user, body }) => {
   const c = await aiContext(user, body.project_id, body.today);
   return AI.chat({ ...c, message: String(body.message || '').slice(0, 2000), history: Array.isArray(body.history) ? body.history : [] });
+});
+
+R.post('/api/ai/duplicates', ({ user, body }) => {
+  const p = loadProject(user, body.project_id);
+  const tasks = T.listProjectTasks(p.id).filter(t => t.status !== 'done' || (Date.now() - new Date(t.completed_at || 0).getTime()) < 30 * 86400000);
+  return { matches: AI.findDuplicates(String(body.title || ''), String(body.description || ''), tasks, { threshold: body.title?.length > 8 ? 0.5 : 0.7 }) };
+});
+R.post('/api/ai/extract', async ({ user, body }) => {
+  needNotViewer(user);
+  const c = await aiContext(user, body.project_id, body.today);
+  return AI.extractTasks(String(body.text || '').slice(0, 20000), c);
+});
+R.post('/api/ai/search', async ({ user, body }) => {
+  const c = await aiContext(user, null, body.today);
+  const q = String(body.query || '').slice(0, 300);
+  const r = await AI.nlSearch(q, c);
+  const byUser = new Map(c.members.map(m => [m.id, m.name]));
+  const tasks = AI.applyFilter(c.tasks, r.filter, { me: c.me, today: c.today }).sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).slice(0, 50)
+    .map(t => ({ id: t.id, key: t.key, title: t.title, status: t.status, status_category: t.status_category, type: t.type, priority: t.priority, due_date: t.due_date, assignee_name: byUser.get(t.assignee_id) || null }));
+  return { ai: r.ai, explain: r.explain.length ? r.explain : ['everything you can see'], filter: r.filter, tasks };
+});
+R.post('/api/ai/sprint-plan', async ({ user, body }) => {
+  const p = loadProject(user, body.project_id, { edit: true });
+  const sprint = get('SELECT * FROM sprints WHERE id=? AND project_id=?', body.sprint_id, p.id);
+  if (!sprint) throw notFound('Sprint not found');
+  const start = sprint.start_date || todayStr(), end = sprint.end_date || addDays(start, 13);
+  const users = all(`SELECT * FROM users WHERE id IN (${projectMembers(p).map(m => m.id).join(',') || 0})`);
+  const capacity = Math.round(users.reduce((a, u) => a + CAP.capacityBetween(u, start, end), 0) * 10) / 10;
+  const already = T.listProjectTasks(p.id).filter(t => t.sprint_id === sprint.id).reduce((a, t) => a + (t.estimate || 0), 0);
+  const backlog = T.listProjectTasks(p.id).filter(t => !t.sprint_id && t.status !== 'done');
+  const vel = PLAN.listSprints(p.id);
+  const plan = await AI.sprintPlan({ backlog, capacity: Math.max(0, capacity - already), people: users.length, velocity: vel.velocity_unit === 'hours' ? vel.velocity : null });
+  return { ...plan, capacity, already_planned: already };
+});
+
+// ============ capacity & time off ============
+R.get('/api/capacity', ({ user, query }) => { if (user.role === 'guest') throw forbidden(); return CAP.capacityReport(user, query); });
+R.post('/api/time-off', ({ user, body }) => ({ id: CAP.addTimeOff(user, body) }));
+R.del('/api/time-off/:id', ({ user, params }) => { CAP.deleteTimeOff(user, Number(params.id)); return { ok: true }; });
+R.post('/api/projects/:id/digest/send', async ({ user, params }) => {
+  const p = loadProject(user, params.id, { manage: true });
+  return sendProjectDigest(p, { force: true });
 });
 
 // ============ admin utilities ============

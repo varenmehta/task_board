@@ -8,6 +8,7 @@ import { timelineView } from './timeline.js';
 import { planView } from './plan.js';
 import { projectSettingsView } from './project-settings.js';
 import { reloadLookups } from '../main.js';
+import { notesImportModal } from './notes.js';
 
 const FILTER_KEY = pid => `tb_filters_${pid}`;
 const DEFAULT_FILTERS = { assignee: 'all', priority: 'all', label: 'all', type: 'all', sprint: 'all' };
@@ -79,7 +80,7 @@ function paint(shell, ctl, repaint, soft) {
       h('span', { class: 'chip green', title: 'Updates appear live' }, h('span', { class: 'live-dot' }), 'Live'),
       total ? h('span', { class: 'chip' }, `${done}/${total} done`) : null,
       p.can_manage ? h('a', { class: 'icon-btn', href: `#/project/${p.id}/settings`, 'aria-label': 'Project settings', title: 'Project settings' }, icon('settings', 18)) : null,
-      readonly ? h('span', { class: 'chip amber' }, p.role === 'commenter' ? 'Comment only' : 'View only') : h('button', { class: 'btn primary', onclick: () => newTask(ctl, defaultStatusId(ctl)) }, icon('plus', 16), 'New task')),
+      readonly ? h('span', { class: 'chip amber' }, p.role === 'commenter' ? 'Comment only' : 'View only') : [h('button', { class: 'btn', onclick: () => notesImportModal(ctl), title: 'Create tasks from meeting notes' }, icon('wand', 15), h('span', { class: 'tab-l' }, 'From notes')), h('button', { class: 'btn primary', onclick: () => newTask(ctl, defaultStatusId(ctl)) }, icon('plus', 16), 'New task')]),
     h('div', { class: 'tabs' }, tabBtn('board', 'Board', 'board'), tabBtn('list', 'List', 'list'), tabBtn('calendar', 'Calendar', 'calendar'), tabBtn('timeline', 'Timeline', 'gantt'), tabBtn('plan', 'Plan', 'target'), tabBtn('insights', 'Insights', 'sparkles')));
 
   let body;

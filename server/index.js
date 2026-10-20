@@ -9,6 +9,9 @@ import { authenticateBearer } from './tokens.js';
 import { HttpError } from './util.js';
 import './notifications.js';
 import './automations.js';
+import './triage.js';
+import './webhooks.js';
+import './planning.js';
 import { startScheduler } from './scheduler.js';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.ico': 'image/x-icon' };

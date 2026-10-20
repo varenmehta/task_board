@@ -1,5 +1,7 @@
 import { h, icon, menu, avatar, PRIORITY, STATUS_LABEL, priorityBadge, statusDot, modal, toast, todayStr, $, TYPE, typeIcon } from '../dom.js';
 import { api } from '../api.js';
+import { voiceButton } from '../voice.js';
+import { openTask } from './task.js';
 import { state, userById, membersOfProject, projectById, statusesOf } from '../state.js';
 
 export const statusMenu = (anchor, cur, cb, statuses = state.statuses) => menu(anchor, statuses.map(s => ({ node: statusDot(s.id, s.category), label: s.label, checked: s.id === cur, onClick: () => cb(s.id) })));
@@ -54,7 +56,17 @@ export function createTaskModal({ projectId, status = 'todo', draft = {}, onCrea
     if (subtasks.length) note.textContent = `Will also create ${subtasks.length} subtask(s) from the template.`;
   } }, h('option', { value: '' }, 'Start from a template…'), templates.map(t => h('option', { value: t.id }, t.name)));
   const magic = h('input', { class: 'input', placeholder: 'e.g. "Fix login redirect bug by Friday, assign to Marcus, urgent"', onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); fill(); } } });
-  const title = h('input', { class: 'input', value: v.title, placeholder: 'Task title', oninput: () => (v.title = title.value) });
+  const dupBox = h('div');
+  let dupTimer;
+  const checkDupes = () => {
+    clearTimeout(dupTimer);
+    dupTimer = setTimeout(async () => {
+      if (v.title.trim().length < 6) return dupBox.replaceChildren();
+      const r = await api.post('/ai/duplicates', { project_id: projectId, title: v.title, description: v.description }).catch(() => ({ matches: [] }));
+      dupBox.replaceChildren(...(r.matches.length ? [h('div', { class: 'ai-panel', style: { borderRadius: '10px' } }, h('div', { class: 'small', style: { fontWeight: 650 } }, '⚠️ Possible duplicates'), ...r.matches.slice(0, 3).map(m => h('button', { type: 'button', class: 'sub', style: { border: 0, background: 'transparent', textAlign: 'left', cursor: 'pointer' }, onclick: () => openTask(m.id) }, statusDot(m.status, m.status_category), h('span', { class: 'mono small faint' }, m.key), h('span', { class: 't' }, m.title), h('span', { class: 'chip' }, Math.round(m.score * 100) + '%'))))] : []));
+    }, 350);
+  };
+  const title = h('input', { class: 'input', value: v.title, placeholder: 'Task title', oninput: () => { v.title = title.value; checkDupes(); } });
   const desc = h('textarea', { class: 'textarea', placeholder: 'Add context, links, acceptance criteria…', oninput: () => (v.description = desc.value) }, v.description);
   const row = h('div', { class: 'row', style: { flexWrap: 'wrap', gap: '8px' } });
   const fillBtn = h('button', { class: 'btn ai', onclick: fill }, icon('sparkles', 15), 'Fill');
@@ -93,8 +105,8 @@ export function createTaskModal({ projectId, status = 'todo', draft = {}, onCrea
     title: `New task · ${project?.name || ''}`, width: 600,
     body: [
       tplSel ? h('div', { class: 'field' }, h('label', 'Template'), tplSel) : null,
-      h('div', { class: 'field' }, h('label', '✨ Describe it'), h('div', { class: 'row' }, magic, fillBtn), note),
-      h('div', { class: 'field' }, h('label', 'Title'), title), h('div', { class: 'field' }, h('label', 'Description'), desc),
+      h('div', { class: 'field' }, h('label', '✨ Describe it'), h('div', { class: 'row' }, magic, voiceButton(() => magic) || '', fillBtn), note),
+      h('div', { class: 'field' }, h('label', 'Title'), title, dupBox), h('div', { class: 'field' }, h('label', 'Description'), desc),
       row, h('div', { class: 'field' }, h('label', 'Labels'), labelsBox),
     ],
     actions: [{ label: 'Cancel' }, {
