@@ -1,0 +1,33 @@
+# fly launch --no-deploy --copy-config   (then: fly volumes create taskboard_data --size 1 && fly deploy)
+app = "taskboard-CHANGE-ME"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3000"
+  DATA_DIR = "/data"
+  # BASE_URL = "https://your-domain.com"   # set once you have a custom domain (or after `fly open` shows the URL)
+
+[mounts]
+  source = "taskboard_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "off"     # the scheduler (reminders, digests, backups) must keep running
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

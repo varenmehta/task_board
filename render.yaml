@@ -1,0 +1,19 @@
+# Render Blueprint: New → Blueprint → pick this repo. Needs a paid instance because it uses a persistent disk.
+services:
+  - type: web
+    name: taskboard
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: taskboard-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: BASE_URL
+        sync: false            # e.g. https://taskboard.onrender.com or your custom domain
+      - key: ANTHROPIC_API_KEY
+        sync: false            # optional

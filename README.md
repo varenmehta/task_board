@@ -40,6 +40,7 @@ Everything works out of the box in **simulated** mode: emails/texts are recorded
 7. **GitHub/GitLab/Sentry/PagerDuty/Datadog** — project settings → *Inbound integrations* gives you the URL (and secret) to paste into the other tool. Put the task key (e.g. `API-12`) in the PR title or branch name.
 
 ## Deploy
+See **[DEPLOY.md](DEPLOY.md)** for step-by-step Fly.io, Render and VPS guides (`fly.toml`, `render.yaml` and `docker-compose.prod.yml` are included). Quick version:
 Needs a long-running process (scheduler: reminders, digests, recurring tasks, Gmail polling, backups) and a persistent `DATA_DIR`.
 
 ```bash

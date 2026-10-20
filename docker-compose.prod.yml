@@ -1,0 +1,25 @@
+# Any VPS with Docker:  DOMAIN=tasks.example.com docker compose -f docker-compose.prod.yml up -d
+# Point the domain's DNS A record at the server first; Caddy gets and renews the HTTPS certificate automatically.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      BASE_URL: https://${DOMAIN:?set DOMAIN}
+      DATA_DIR: /data
+      # ANTHROPIC_API_KEY: ...   # optional — or enter keys in Settings → Workspace
+    volumes:
+      - taskboard-data:/data
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    command: caddy reverse-proxy --from ${DOMAIN} --to app:3000
+    volumes:
+      - caddy-data:/data
+    depends_on: [app]
+volumes:
+  taskboard-data:
+  caddy-data:
