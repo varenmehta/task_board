@@ -29,5 +29,15 @@ export const STATUSES = [
   { id: 'done', label: 'Done' },
 ];
 export const STATUS_IDS = STATUSES.map(s => s.id);
+// category drives semantics (completion, "in flight") independent of a project's custom column names
+export const DEFAULT_STATUSES = [
+  { id: 'backlog', label: 'Backlog', category: 'todo', wip: null },
+  { id: 'todo', label: 'To do', category: 'todo', wip: null },
+  { id: 'in_progress', label: 'In progress', category: 'doing', wip: null },
+  { id: 'review', label: 'In review', category: 'doing', wip: null },
+  { id: 'done', label: 'Done', category: 'done', wip: null },
+];
+export const TASK_TYPES = ['task', 'bug', 'story', 'epic'];
 export const PRIORITIES = ['urgent', 'high', 'medium', 'low'];
-export const ORG_ROLES = ['admin', 'manager', 'member', 'viewer'];
+export const ORG_ROLES = ['admin', 'manager', 'member', 'viewer', 'guest'];
+export const PROJECT_ROLES = ['manager', 'editor', 'commenter', 'viewer'];

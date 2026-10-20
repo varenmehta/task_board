@@ -9,6 +9,7 @@ import { projectMembers, visibleProjects } from './access.js';
 import { googleConfigured, getIntegration, fetchLabelledEmails, markRead } from './channels/google.js';
 import { briefingBlurb, emailToTask } from './ai.js';
 import { getSetting } from './db.js';
+import { runRecurrences } from './recurring.js';
 
 const once = key => {
   if (get('SELECT 1 FROM sent_reminders WHERE key=?', key)) return false;
@@ -113,6 +114,7 @@ export function startScheduler() {
     safe('reminders', () => (tick % 5 === 1 ? runReminders() : 0));
     safe('digests', () => runDigests());
     safe('inbox', () => (tick % 2 === 0 ? pollInbox() : 0));
+    safe('recurring', () => (tick % 5 === 2 ? runRecurrences() : 0));
     if (tick % 60 === 0) safe('prune', pruneOutbox);
   };
   setTimeout(loop, 5_000).unref();

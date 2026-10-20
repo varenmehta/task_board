@@ -1,12 +1,17 @@
 import crypto from 'node:crypto';
 import { Router } from './router.js';
 import { all, get, run, insert, tx, parseJSON, getSetting, setSetting, SETTING_KEYS, SECRET_KEYS } from './db.js';
-import { ORG_ROLES, STATUSES } from './config.js';
+import { ORG_ROLES, PROJECT_ROLES, DEFAULT_STATUSES, TASK_TYPES } from './config.js';
 import { bad, forbidden, notFound, handleOf, pickColor, todayStr, addDays, HttpError, clip } from './util.js';
 import { hashPassword, verifyPassword, sessionCookie, clearCookie, rateLimit, sign, verify } from './auth.js';
-import { teamRole, canViewProject, canEditProject, canManageTeam, visibleProjects, projectMembers } from './access.js';
+import { teamRole, canViewProject, canEditProject, canManageTeam, canManageProject, projectRole, visibleProjects, projectMembers } from './access.js';
+import { projectStatuses, validateStatuses, statusIds } from './statuses.js';
+import * as TIME from './time.js';
+import * as ATT from './attachments.js';
+import * as REC from './recurring.js';
 import * as T from './tasks.js';
-import { addClient } from './events.js';
+import { addClient, pushTo } from './events.js';
+import { usersWhoCanView } from './access.js';
 import { getPrefs, DEFAULT_PREFS, EVENTS, unreadCount, markAllRead } from './notifications.js';
 import { TRIGGERS, ACTIONS, validateRule, seedDefaultRules } from './automations.js';
 import * as AI from './ai.js';
@@ -37,12 +42,17 @@ function me(u) {
   };
 }
 
-function loadProject(user, id, { edit = false } = {}) {
+function loadProject(user, id, { edit = false, manage = false } = {}) {
   const p = T.getProject(Number(id));
   if (!p || !canViewProject(user, p)) throw notFound('Project not found');
   if (edit && !canEditProject(user, p)) throw forbidden();
+  if (manage && !canManageProject(user, p)) throw forbidden('Only project managers can do that');
   return p;
 }
+const projectOut = (user, p) => ({
+  ...p, statuses: projectStatuses(p), fields: parseJSON(p.fields, []), digest_emails: parseJSON(p.digest_emails, []), auto_triage: !!p.auto_triage,
+  role: projectRole(user, p), can_edit: canEditProject(user, p), can_manage: canManageProject(user, p),
+});
 
 // ============ session / auth ============
 R.get('/api/health', () => ({ ok: true }), { public: true });
@@ -51,7 +61,7 @@ R.get('/api/bootstrap', ({ user }) => ({
   needs_setup: !hasUsers(),
   workspace: getSetting('workspace_name') || 'TaskBoard',
   me: user ? me(user) : null,
-  statuses: STATUSES,
+  statuses: DEFAULT_STATUSES, task_types: TASK_TYPES,
   ai_mode: AI.aiMode(),
   demo: !!get("SELECT 1 FROM users WHERE email LIKE '%@demo.taskboard.dev' AND active=1"),
 }), { public: true });
@@ -255,7 +265,12 @@ R.put('/api/settings', ({ user, body }) => {
 
 // ============ users ============
 R.get('/api/users', ({ user }) => {
-  const rows = all('SELECT * FROM users WHERE active=1 ORDER BY name');
+  let rows = all('SELECT * FROM users WHERE active=1 ORDER BY name');
+  if (user.role === 'guest') {
+    const ids = new Set([user.id]);
+    for (const p of visibleProjects(user)) for (const uid of usersWhoCanView(p)) ids.add(uid);
+    rows = rows.filter(u => ids.has(u.id));
+  }
   const tm = all('SELECT * FROM team_members');
   return rows.map(u => ({
     ...publicUser(u), pending: !!u.invite_token, phone_verified: !!u.phone_verified,
@@ -273,6 +288,7 @@ R.post('/api/users', async ({ user, body, req }) => {
   const token = crypto.randomBytes(24).toString('base64url');
   const id = insert('INSERT INTO users(email,name,role,color,title,invite_token) VALUES(?,?,?,?,?,?)', email, name, body.role || 'member', pickColor(get('SELECT COUNT(*) n FROM users').n + 2), String(body.title || ''), token);
   for (const tid of body.team_ids || []) if (get('SELECT 1 FROM teams WHERE id=?', tid)) run('INSERT OR IGNORE INTO team_members(team_id,user_id,role) VALUES(?,?,?)', tid, id, 'member');
+  for (const pid of body.project_ids || []) if (get('SELECT 1 FROM projects WHERE id=?', pid)) run('INSERT OR IGNORE INTO project_members(project_id,user_id,role) VALUES(?,?,?)', pid, id, body.role === 'guest' ? 'commenter' : 'editor');
   const link = `${baseUrl(req)}/#/invite/${token}`;
   const status = await sendEmail({ userId: user.id, to: email, subject: `${user.name} invited you to ${getSetting('workspace_name') || 'TaskBoard'}`,
     text: `Join your team on TaskBoard: ${link}`, html: emailHtml({ heading: `You're invited to ${getSetting('workspace_name') || 'TaskBoard'}`, body: `${user.name} added you as <b>${body.role || 'member'}</b>. Set a password to get started.`, ctaText: 'Accept invitation', ctaUrl: link }) });
@@ -305,6 +321,7 @@ R.del('/api/users/:id', ({ user, params }) => {
 
 // ============ teams ============
 R.get('/api/teams', ({ user }) => {
+  if (user.role === 'guest') return [];
   const teams = user.role === 'admin' ? all('SELECT * FROM teams ORDER BY name')
     : all('SELECT t.* FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? ORDER BY t.name', user.id);
   return teams.map(t => ({
@@ -360,7 +377,7 @@ R.get('/api/projects', ({ user }) => {
   const rows = visibleProjects(user, { archived: false });
   return rows.map(p => {
     const c = get(`SELECT COUNT(*) total, SUM(status='done') done, SUM(status<>'done' AND due_date<?) overdue FROM tasks WHERE project_id=? AND parent_id IS NULL`, todayStr(), p.id);
-    return { ...p, total: c.total, done: c.done || 0, overdue: c.overdue || 0, can_edit: canEditProject(user, p), can_manage: canManageTeam(user, p.team_id) };
+    return { ...projectOut(user, p), total: c.total, done: c.done || 0, overdue: c.overdue || 0, member_ids: projectMembers(p).map(m => m.id) };
   });
 });
 
@@ -372,20 +389,77 @@ R.post('/api/projects', ({ user, body }) => {
   const key = String(body.key || name.slice(0, 3)).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
   if (!name || key.length < 2) throw bad('Name and a 2–5 character key are required');
   if (get('SELECT 1 FROM projects WHERE key=?', key)) throw bad(`The key ${key} is already used`);
-  const id = insert('INSERT INTO projects(team_id,key,name,description,color) VALUES(?,?,?,?,?)', teamId, key, name.slice(0, 80), String(body.description || '').slice(0, 500), body.color || pickColor(get('SELECT COUNT(*) n FROM projects').n));
+  const statuses = body.statuses ? JSON.stringify(validateStatuses(body.statuses)) : null;
+  const id = insert('INSERT INTO projects(team_id,key,name,description,color,statuses) VALUES(?,?,?,?,?,?)', teamId, key, name.slice(0, 80), String(body.description || '').slice(0, 500), body.color || pickColor(get('SELECT COUNT(*) n FROM projects').n), statuses);
   return T.getProject(id);
 });
 
 R.patch('/api/projects/:id', ({ user, params, body }) => {
-  const p = loadProject(user, params.id);
-  if (!canManageTeam(user, p.team_id)) throw forbidden();
-  run('UPDATE projects SET name=?, description=?, color=?, archived=? WHERE id=?', String(body.name ?? p.name).trim().slice(0, 80) || p.name, String(body.description ?? p.description).slice(0, 500), body.color ?? p.color, body.archived ? 1 : 0, p.id);
-  return T.getProject(p.id);
+  const p = loadProject(user, params.id, { manage: true });
+  const sets = { name: String(body.name ?? p.name).trim().slice(0, 80) || p.name, description: String(body.description ?? p.description).slice(0, 500), color: body.color ?? p.color, archived: body.archived ? 1 : 0 };
+  if ('auto_triage' in body) sets.auto_triage = body.auto_triage ? 1 : 0;
+  if ('digest_emails' in body) {
+    const list = (Array.isArray(body.digest_emails) ? body.digest_emails : []).map(e => String(e).trim().toLowerCase()).filter(e => /^\S+@\S+\.\S+$/.test(e)).slice(0, 20);
+    sets.digest_emails = JSON.stringify([...new Set(list)]);
+  }
+  if ('fields' in body) {
+    const fields = (Array.isArray(body.fields) ? body.fields : []).slice(0, 12).map(f => ({
+      id: String(f.id || f.label).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 24),
+      label: String(f.label || '').trim().slice(0, 30), type: ['text', 'number', 'select', 'date', 'checkbox'].includes(f.type) ? f.type : 'text',
+      options: f.type === 'select' ? (Array.isArray(f.options) ? f.options : []).map(o => String(o).trim()).filter(Boolean).slice(0, 20) : undefined,
+    })).filter(f => f.id && f.label);
+    if (new Set(fields.map(f => f.id)).size !== fields.length) throw bad('Field names must be unique');
+    sets.fields = JSON.stringify(fields);
+  }
+  if ('statuses' in body) {
+    const next = validateStatuses(body.statuses);
+    const removed = projectStatuses(p).filter(s => !next.some(n => n.id === s.id));
+    for (const r of removed) {
+      const used = get('SELECT COUNT(*) n FROM tasks WHERE project_id=? AND status=?', p.id, r.id).n;
+      if (used) {
+        const to = body.move_tasks_to && next.some(n => n.id === body.move_tasks_to) ? body.move_tasks_to : null;
+        if (!to) throw bad(`“${r.label}” still has ${used} task(s) — choose where to move them first`);
+        run('UPDATE tasks SET status=? WHERE project_id=? AND status=?', to, p.id, r.id);
+      }
+    }
+    sets.statuses = JSON.stringify(next);
+  }
+  const cols = Object.keys(sets);
+  run(`UPDATE projects SET ${cols.map(c => c + '=?').join(',')} WHERE id=?`, ...cols.map(c => sets[c]), p.id);
+  pushTo(usersWhoCanView(p), 'task', { project_id: p.id, change: 'project' });
+  return projectOut(user, T.getProject(p.id));
+});
+
+R.put('/api/projects/:id/members/:uid', ({ user, params, body }) => {
+  const p = loadProject(user, params.id, { manage: true });
+  const role = String(body.role || '');
+  if (!PROJECT_ROLES.includes(role)) throw bad('Invalid project role');
+  if (!get('SELECT 1 FROM users WHERE id=? AND active=1', params.uid)) throw notFound('User not found');
+  run('INSERT INTO project_members(project_id,user_id,role) VALUES(?,?,?) ON CONFLICT(project_id,user_id) DO UPDATE SET role=excluded.role', p.id, params.uid, role);
+  return { ok: true };
+});
+R.del('/api/projects/:id/members/:uid', ({ user, params }) => {
+  const p = loadProject(user, params.id, { manage: true });
+  run('DELETE FROM project_members WHERE project_id=? AND user_id=?', p.id, params.uid);
+  return { ok: true };
+});
+R.get('/api/projects/:id/access', ({ user, params }) => {
+  const p = loadProject(user, params.id, { manage: true });
+  return {
+    explicit: all(`SELECT pm.user_id, pm.role, u.name, u.email, u.role AS org_role FROM project_members pm JOIN users u ON u.id=pm.user_id WHERE pm.project_id=? AND u.active=1`, p.id),
+    team: all(`SELECT u.id AS user_id, u.name, u.email, tm.role FROM team_members tm JOIN users u ON u.id=tm.user_id WHERE tm.team_id=? AND u.active=1`, p.team_id),
+    roles: PROJECT_ROLES,
+  };
 });
 
 R.get('/api/projects/:id/board', ({ user, params }) => {
   const p = loadProject(user, params.id);
-  return { project: { ...p, can_edit: canEditProject(user, p), can_manage: canManageTeam(user, p.team_id) }, tasks: T.listProjectTasks(p.id), members: projectMembers(p).map(u => ({ ...publicUser(u) })) };
+  return {
+    project: projectOut(user, p), tasks: T.listProjectTasks(p.id), members: projectMembers(p).map(u => ({ ...publicUser(u) })),
+    sprints: all('SELECT * FROM sprints WHERE project_id=? ORDER BY id', p.id), releases: all('SELECT * FROM releases WHERE project_id=? ORDER BY id', p.id),
+    views: all('SELECT id,user_id,name,filters,shared FROM saved_views WHERE project_id=? AND (user_id=? OR shared=1) ORDER BY name', p.id, user.id).map(v => ({ ...v, filters: parseJSON(v.filters, {}), shared: !!v.shared, mine: v.user_id === user.id })),
+    templates: REC.listTemplates(p.id),
+  };
 });
 
 R.post('/api/projects/:id/tasks', ({ user, params, body }) => T.createTask(user, Number(params.id), body));
@@ -417,6 +491,60 @@ R.get('/api/search', ({ user, query }) => {
     AND (t.title LIKE ? OR t.description LIKE ? OR t.labels LIKE ? OR (p.key=? AND t.number=?)) ORDER BY t.updated_at DESC LIMIT 15`, like, like, like, m?.[1] ?? '', m ? Number(m[2]) : -1)
     .map(r => T.getTask(r.id));
 });
+
+
+// ---- bulk, dependencies, time, attachments ----
+R.post('/api/tasks/bulk', ({ user, body }) => T.bulkApply(user, body.ids, { patch: body.patch, remove: !!body.delete }));
+
+R.get('/api/tasks/:id/links', ({ user, params }) => { T.taskDetail(user, Number(params.id)); return T.getLinks(Number(params.id)); });
+R.post('/api/tasks/:id/blockers', ({ user, params, body }) => T.addBlocker(user, Number(params.id), Number(body.blocker_id)));
+R.del('/api/tasks/:id/blockers/:bid', ({ user, params }) => T.removeBlocker(user, Number(params.id), Number(params.bid)));
+
+R.get('/api/tasks/:id/time', ({ user, params }) => { T.taskDetail(user, Number(params.id)); return TIME.taskTime(Number(params.id)); });
+R.post('/api/tasks/:id/time', ({ user, params, body }) => ({ id: TIME.logTime(user, Number(params.id), body) }));
+R.post('/api/tasks/:id/timer/start', ({ user, params }) => { TIME.startTimer(user, Number(params.id)); return TIME.runningTimer(user.id); });
+R.post('/api/timer/stop', ({ user }) => ({ stopped: TIME.stopTimer(user.id) }));
+R.get('/api/timer', ({ user }) => TIME.runningTimer(user.id) || { none: true });
+R.del('/api/time/:id', ({ user, params }) => { TIME.deleteEntry(user, Number(params.id)); return { ok: true }; });
+
+R.post('/api/tasks/:id/attachments', ({ user, params, req, raw }) => ATT.saveAttachment(user, Number(params.id), raw, {
+  name: decodeURIComponent(req.headers['x-filename'] || 'file'), mime: (req.headers['content-type'] || '').split(';')[0] }), { raw: true });
+R.get('/api/attachments/:id', ({ user, params, res }) => {
+  const { stream, headers } = ATT.openAttachment(user, Number(params.id));
+  res.writeHead(200, headers);
+  stream.pipe(res);
+  return undefined;
+}, { stream: true });
+R.del('/api/attachments/:id', ({ user, params }) => { ATT.deleteAttachment(user, Number(params.id)); return { ok: true }; });
+
+// ---- saved views, templates, recurring ----
+R.post('/api/projects/:id/views', ({ user, params, body }) => {
+  const p = loadProject(user, params.id);
+  const name = String(body.name || '').trim().slice(0, 40);
+  if (!name) throw bad('Name your view');
+  const shared = body.shared && canManageProject(user, p) ? 1 : 0;
+  return { id: insert('INSERT INTO saved_views(user_id,project_id,name,filters,shared) VALUES(?,?,?,?,?)', user.id, p.id, name, JSON.stringify(body.filters || {}), shared) };
+});
+R.del('/api/views/:id', ({ user, params }) => {
+  const v = get('SELECT * FROM saved_views WHERE id=?', params.id);
+  if (!v || (v.user_id !== user.id && user.role !== 'admin')) throw notFound('View not found');
+  run('DELETE FROM saved_views WHERE id=?', v.id);
+  return { ok: true };
+});
+
+R.get('/api/projects/:id/templates', ({ user, params }) => { loadProject(user, params.id); return REC.listTemplates(Number(params.id)); });
+R.post('/api/projects/:id/templates', ({ user, params, body }) => ({ id: REC.saveTemplate(user, Number(params.id), body) }));
+R.del('/api/projects/:id/templates/:tid', ({ user, params }) => { REC.deleteTemplate(user, Number(params.id), Number(params.tid)); return { ok: true }; });
+R.post('/api/projects/:id/templates/:tid/use', ({ user, params, body }) => {
+  const p = loadProject(user, params.id, { edit: true });
+  const t = get('SELECT * FROM templates WHERE id=? AND project_id=?', params.tid, p.id);
+  if (!t) throw notFound('Template not found');
+  return REC.instantiate(user, p.id, parseJSON(t.data, {}), { assignee_id: body.assignee_id, status: body.status });
+});
+R.get('/api/projects/:id/recurrences', ({ user, params }) => { loadProject(user, params.id); return REC.listRecurrences(Number(params.id)); });
+R.post('/api/projects/:id/recurrences', ({ user, params, body }) => ({ id: REC.saveRecurrence(user, Number(params.id), body) }));
+R.put('/api/projects/:id/recurrences/:rid', ({ user, params, body }) => ({ id: REC.saveRecurrence(user, Number(params.id), { ...body, id: Number(params.rid) }) }));
+R.del('/api/projects/:id/recurrences/:rid', ({ user, params }) => { REC.deleteRecurrence(user, Number(params.id), Number(params.rid)); return { ok: true }; });
 
 // ============ notifications ============
 R.get('/api/notifications', ({ user }) => ({

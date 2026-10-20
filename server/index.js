@@ -38,8 +38,12 @@ export const server = http.createServer(async (req, res) => {
     const user = userFromToken(cookies.tb_session);
     if (!route.opts.public && !user) throw new HttpError(401, 'Please sign in');
 
-    let body = {};
-    if (!['GET', 'HEAD'].includes(req.method)) {
+    let body = {}, rawBody = null;
+    if (route.opts.raw) {
+      // binary upload: the custom header forces a CORS preflight, so cross-site pages can't forge it
+      if (!req.headers['x-filename']) throw new HttpError(400, 'Missing X-Filename header');
+      rawBody = await readBody(req, { raw: true });
+    } else if (!['GET', 'HEAD'].includes(req.method)) {
       const raw = await readBody(req);
       const type = req.headers['content-type'] || '';
       if (type.includes('application/x-www-form-urlencoded')) body = Object.fromEntries(new URLSearchParams(raw));
@@ -50,7 +54,7 @@ export const server = http.createServer(async (req, res) => {
       }
       if (type.includes('application/x-www-form-urlencoded') && pathname !== '/api/webhooks/twilio') throw new HttpError(415, 'Content-Type must be application/json');
     }
-    const result = await route.handler({ req, res, params, query: Object.fromEntries(url.searchParams), body, user });
+    const result = await route.handler({ req, res, params, query: Object.fromEntries(url.searchParams), body, user, raw: rawBody });
     if (route.opts.stream || res.writableEnded) return;
     if (result?.__xml) { res.writeHead(200, { 'Content-Type': 'text/xml' }); return res.end(result.__xml); }
     send(res, 200, result ?? { ok: true });

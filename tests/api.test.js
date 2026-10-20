@@ -179,7 +179,7 @@ test('SMS commands: list / start / done / add', async () => {
   const marcus = get('SELECT * FROM users WHERE email=?', 'marcus@demo.taskboard.dev');
   assert.match(await handleCommand(marcus, 'list'), /Your open tasks/);
   const t = get(`SELECT t.number FROM tasks t JOIN projects p ON p.id=t.project_id WHERE p.key='API' AND t.assignee_id=? AND t.status='in_progress' LIMIT 1`, marcus.id);
-  assert.match(await handleCommand(marcus, `done api-${t.number}`), /→ done/);
+  assert.match(await handleCommand(marcus, `done api-${t.number}`), /→ Done/);
   assert.match(await handleCommand(marcus, 'add fix flaky login test tomorrow !high'), /Created API-\d+/);
   assert.match(await handleCommand(marcus, 'done nope-1'), /couldn't find/);
   assert.match(await handleCommand(marcus, 'gibberish'), /commands/);

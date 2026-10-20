@@ -1,6 +1,7 @@
 // Two-way phone control: text the bot "list", "done TB-12", "add fix login bug tomorrow".
 import { all, get } from './db.js';
-import { listAssigned, updateTask, createTask, getTask, addComment } from './tasks.js';
+import { listAssigned, updateTask, createTask, getTask, addComment, getProject } from './tasks.js';
+import { startedStatus, reviewStatus, defaultStatus, statusIds } from './statuses.js';
 import { visibleProjects, projectMembers } from './access.js';
 import { localParseTask, parseTask } from './ai.js';
 import { getPrefs } from './notifications.js';
@@ -40,9 +41,11 @@ export async function handleCommand(user, raw) {
     if (['done', 'finish', 'complete', 'start', 'review', 'todo'].includes(verb)) {
       const task = findTask(user, rest[0]);
       if (!task) return `I couldn't find task "${rest[0] || ''}". Try "list".`;
-      const status = { done: 'done', finish: 'done', complete: 'done', start: 'in_progress', review: 'review', todo: 'todo' }[verb];
-      updateTask(user, task.id, { status });
-      return `✅ ${task.key} → ${status.replace('_', ' ')}`;
+      const proj = getProject(task.project_id);
+      const status = { done: 'done', finish: 'done', complete: 'done', start: startedStatus(proj), review: reviewStatus(proj), todo: defaultStatus(proj) }[verb];
+      if (!status || !statusIds(proj).includes(status)) return `${task.project_name} has no “${verb}” column.`;
+      const updated = updateTask(user, task.id, { status });
+      return `✅ ${task.key} → ${updated.status_label}`;
     }
 
     if (verb === 'comment' || verb === 'note') {

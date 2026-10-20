@@ -142,6 +142,79 @@ CREATE TABLE IF NOT EXISTS processed_emails (
 );
 `);
 
+// ---- additive migrations (safe to run on every boot) ----
+function addColumn(table, col, def) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+}
+addColumn('projects', 'statuses', 'TEXT');
+addColumn('projects', 'fields', "TEXT NOT NULL DEFAULT '[]'");
+addColumn('projects', 'digest_emails', "TEXT NOT NULL DEFAULT '[]'");
+addColumn('projects', 'auto_triage', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('tasks', 'start_date', 'TEXT');
+addColumn('tasks', 'type', "TEXT NOT NULL DEFAULT 'task'");
+addColumn('tasks', 'epic_id', 'INTEGER');
+addColumn('tasks', 'sprint_id', 'INTEGER');
+addColumn('tasks', 'release_id', 'INTEGER');
+addColumn('tasks', 'custom', "TEXT NOT NULL DEFAULT '{}'");
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'editor',
+  PRIMARY KEY (project_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS attachments (
+  id INTEGER PRIMARY KEY,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  user_id INTEGER, name TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, path TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+CREATE TABLE IF NOT EXISTS saved_views (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, filters TEXT NOT NULL DEFAULT '{}', shared INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+CREATE TABLE IF NOT EXISTS templates (
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}', created_by INTEGER, created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+CREATE TABLE IF NOT EXISTS recurrences (
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}', schedule TEXT NOT NULL, next_run TEXT NOT NULL,
+  assignee_id INTEGER, enabled INTEGER NOT NULL DEFAULT 1, last_task_id INTEGER, created_by INTEGER,
+  created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+CREATE TABLE IF NOT EXISTS task_links (
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  other_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'blocks',
+  PRIMARY KEY (task_id, other_id, kind)
+);
+CREATE TABLE IF NOT EXISTS time_entries (
+  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL, started_at TEXT, seconds INTEGER NOT NULL DEFAULT 0, running INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '', day TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+CREATE INDEX IF NOT EXISTS idx_time_user ON time_entries(user_id, day);
+CREATE TABLE IF NOT EXISTS sprints (
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, goal TEXT NOT NULL DEFAULT '', start_date TEXT, end_date TEXT,
+  state TEXT NOT NULL DEFAULT 'planned', closed_at TEXT, created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+CREATE TABLE IF NOT EXISTS sprint_snapshots (
+  sprint_id INTEGER NOT NULL REFERENCES sprints(id) ON DELETE CASCADE, day TEXT NOT NULL,
+  remaining REAL NOT NULL, total REAL NOT NULL, done_tasks INTEGER NOT NULL, total_tasks INTEGER NOT NULL,
+  PRIMARY KEY (sprint_id, day)
+);
+CREATE TABLE IF NOT EXISTS releases (
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, version TEXT NOT NULL DEFAULT '', date TEXT, state TEXT NOT NULL DEFAULT 'planned',
+  notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+`);
+
 const cache = new Map();
 const stmt = sql => {
   let s = cache.get(sql);

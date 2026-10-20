@@ -1,6 +1,7 @@
 import { HttpError } from './util.js';
 
 const MAX_BODY = 1_000_000;
+export const MAX_RAW = 16 * 1024 * 1024;
 
 export class Router {
   routes = [];
@@ -29,15 +30,16 @@ export class Router {
   }
 }
 
-export function readBody(req) {
+export function readBody(req, { raw = false } = {}) {
+  const limit = raw ? MAX_RAW : MAX_BODY;
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
     req.on('data', c => {
       size += c.length;
-      if (size > MAX_BODY) { reject(new HttpError(413, 'Request too large')); req.destroy(); return; }
+      if (size > limit) { reject(new HttpError(413, 'Request too large')); req.destroy(); return; }
       chunks.push(c);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('end', () => { const buf = Buffer.concat(chunks); resolve(raw ? buf : buf.toString('utf8')); });
     req.on('error', reject);
   });
 }
