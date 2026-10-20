@@ -55,7 +55,8 @@ async function startApp() {
   route();
 }
 
-window.addEventListener('tb:unauthorized', () => { if (state.me) { state.me = null; es?.close(); renderAuth(root, 'login', onAuthed); toast('Please sign in again', 'error'); } });
+window.addEventListener('tb:unauthorized', () => { if (state.me) {
+  clearOfflineCache(); state.me = null; es?.close(); renderAuth(root, 'login', onAuthed); toast('Please sign in again', 'error'); } });
 
 // ---------- shell ----------
 let sidebarNav, viewEl, bellBtn;
@@ -156,7 +157,7 @@ function meMenu(anchor) {
     { label: 'Profile & notifications', icon: 'settings', onClick: () => (location.hash = '#/settings/profile') },
     { label: dark ? 'Light theme' : 'Dark theme', icon: dark ? 'sun' : 'moon', onClick: () => { const t = dark ? 'light' : 'dark'; document.documentElement.dataset.theme = t; try { localStorage.setItem('tb_theme', t); } catch { /* private mode */ } } },
     { divider: true },
-    { label: 'Sign out', icon: 'logout', danger: true, onClick: async () => { es?.close(); await api.post('/logout'); location.reload(); } },
+    { label: 'Sign out', icon: 'logout', danger: true, onClick: async () => { es?.close(); clearOfflineCache(); await api.post('/logout'); location.reload(); } },
   ]);
 }
 
@@ -254,4 +255,10 @@ async function route() {
 }
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('/sw.js').catch(() => {});
+// offline banner (the service worker serves recently viewed boards from its cache)
+const offlineBar = h('div', { class: 'offline-bar', role: 'status' }, icon('alert', 15), ' You’re offline — showing saved data. Changes can’t be saved until you reconnect.');
+const syncOnline = () => { document.body.classList.toggle('offline', !navigator.onLine); if (navigator.onLine && state.me) emit('task', { change: 'reconnected' }); };
+document.body.append(offlineBar);
+window.addEventListener('online', syncOnline); window.addEventListener('offline', syncOnline); syncOnline();
+export const clearOfflineCache = () => navigator.serviceWorker?.controller?.postMessage('clear-api');
 boot();

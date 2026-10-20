@@ -242,3 +242,5 @@ table.matrix { border-collapse: collapse; width: 100%; } .matrix th { font-size:
 .sec-title .chip { text-transform: none; letter-spacing: 0; } .g-label .mono { white-space: nowrap; flex: none; } .g-label .ellipsis { min-width: 0; }
 
 .icon-btn.rec { color: var(--red); background: var(--red-soft); animation: pulse 1s infinite; } @keyframes pulse { 50% { opacity: .55; } }
+
+.offline-bar { position: fixed; top: 0; left: 0; right: 0; z-index: 300; background: var(--amber); color: #1c1400; font-weight: 600; font-size: 13px; padding: 6px 12px; text-align: center; transform: translateY(-110%); transition: transform .2s; } body.offline .offline-bar { transform: none; }

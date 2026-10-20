@@ -159,6 +159,10 @@ addColumn('tasks', 'release_id', 'INTEGER');
 addColumn('tasks', 'custom', "TEXT NOT NULL DEFAULT '{}'");
 addColumn('users', 'calendar_token', 'TEXT');
 addColumn('users', 'slack_id', 'TEXT');
+addColumn('users', 'totp_secret', 'TEXT');
+addColumn('users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('users', 'totp_last', 'INTEGER NOT NULL DEFAULT 0');
+addColumn('users', 'recovery_codes', "TEXT NOT NULL DEFAULT '[]'");
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS project_members (
@@ -256,6 +260,11 @@ CREATE TABLE IF NOT EXISTS time_off (
   start_date TEXT NOT NULL, end_date TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'vacation', note TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (${NOW})
 );
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  ua TEXT, ip TEXT, created_at TEXT NOT NULL DEFAULT (${NOW}), last_seen TEXT NOT NULL DEFAULT (${NOW}), revoked INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS releases (
   id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL, version TEXT NOT NULL DEFAULT '', date TEXT, state TEXT NOT NULL DEFAULT 'planned',

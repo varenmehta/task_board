@@ -11,6 +11,7 @@ import { applyReply } from './emailreply.js';
 import { briefingBlurb, emailToTask, stakeholderDigest, localRisks } from './ai.js';
 import { listProjectTasks } from './tasks.js';
 import { mdToHtml } from './util.js';
+import { backupNow, backupDue } from './backup.js';
 import { getSetting } from './db.js';
 import { runRecurrences } from './recurring.js';
 import { snapshotActiveSprints } from './planning.js';
@@ -170,6 +171,7 @@ export function startScheduler() {
     safe('replies', () => (tick % 2 === 1 ? pollReplies() : 0));
     safe('weekly', () => (tick % 10 === 3 ? runWeeklyDigests() : 0));
     safe('recurring', () => (tick % 5 === 2 ? runRecurrences() : 0));
+    if (tick % 30 === 1) safe('backup', () => (backupDue() ? backupNow() : 0));
     if (tick % 60 === 0) { safe('prune', pruneOutbox); safe('snapshots', snapshotActiveSprints); }
   };
   setTimeout(loop, 5_000).unref();

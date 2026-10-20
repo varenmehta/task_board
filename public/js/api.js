@@ -2,11 +2,14 @@ export class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 async function call(method, path, body) {
-  const res = await fetch('/api' + path, {
-    method, credentials: 'same-origin',
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let res;
+  try {
+    res = await fetch('/api' + path, {
+      method, credentials: 'same-origin',
+      headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch { throw new ApiError(0, navigator.onLine ? 'Could not reach the server' : 'You are offline — changes can’t be saved right now'); }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401 && !path.startsWith('/login')) window.dispatchEvent(new Event('tb:unauthorized'));

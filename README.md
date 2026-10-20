@@ -1,56 +1,64 @@
 # TaskBoard
 
-An automated, AI-assisted task board for software organisations running **multiple projects across multiple teams, with different roles**. Zero dependencies — just Node 22.
+An automated, AI-assisted work-management platform for software organisations running **many projects across many teams with different roles**. Zero runtime dependencies — just Node 22.
 
 ```bash
 npm start            # → http://localhost:3000
-npm test             # API + parser + permission tests
+npm test             # 56 API/security tests (node:test)
+npm run backup       # consistent copy of the database → data/backups
 ```
 
-First visit shows a setup screen: create your admin account and (optionally) load sample data — two teams, four projects, 20 tasks and teammates you can sign in as (`marcus@demo.taskboard.dev`, `priya@…`, `dana@…`, password `demo1234`) to try the member/manager/viewer roles.
+First visit shows a setup screen: create your admin account and (optionally) load sample data — two teams, four projects, ~20 tasks and teammates you can sign in as (`priya@…` manager, `marcus@…` engineer, `dana@…` viewer — all `@demo.taskboard.dev`, password `demo1234`).
 
-## What's inside
+## Features
 
-| Area | What you get |
-|---|---|
-| **Work** | Kanban board with drag & drop (auto-scroll, live updates over SSE), sortable list view with inline-editable cells, task drawer with inline editing of every field, markdown-lite descriptions, subtasks, comments with `@mention` autocomplete, activity history, labels, estimates, due dates, filters, global search (`/` or ⌘K). |
-| **Orgs & roles** | Teams own projects. Org roles: **Admin** (everything), **Manager** (create teams/projects, edit automations), **Member** (edit tasks in their teams), **Viewer** (read-only). Team roles: **Lead** / Member. Visibility follows team membership; assignees are validated against it. Invite by email link. |
-| **Automations** | No-code rules (*when* a task is created / status changes / assigned / due soon / overdue → *then* notify, set status/priority/assignee, add label, comment). Built-in: due-date reminders, daily briefing, mention & assignment alerts. |
-| **Gmail** | Each person connects Gmail via OAuth. Notifications + daily briefing are sent from the workspace sender; label any email **`TaskBoard`** and it becomes a task (AI extracts due date/priority). |
-| **Phone** | Verify a number, get SMS or WhatsApp alerts (optionally only urgent/high), and **reply to control tasks**: `list`, `done API-12`, `start API-12`, `comment API-12 text`, `add fix login bug tomorrow !high`. Installable as a PWA on your home screen. |
-| **AI (Claude)** | Plain-English → structured task, one-click subtask breakdown, description rewrite with acceptance criteria, priority/estimate/owner suggestion, risk radar, standup generator, daily-briefing blurb, chat assistant over your boards (can draft tasks). **Works offline too** with deterministic fallbacks (date/priority/@person parsing, templates, rule-based risks), so nothing breaks without a key. |
+### Work
+Kanban board (drag & drop, edge auto-scroll, live updates over SSE) · sortable list with inline-editable cells · **calendar** (drag to reschedule) · **timeline/Gantt** (drag to shift, resize to change due date) · **custom columns per project with WIP limits** · task types (task/bug/story/epic) · subtasks · **dependencies** ("blocked by", cycle-safe) · **custom fields** (text/number/select/date/checkbox) · labels · estimates · **time tracking** (timer + manual log) · **attachments** (upload, drag-drop, paste screenshots) · comments with `@mention` autocomplete · activity history · **bulk actions** (⌘/Ctrl-click or Space to select) · **saved & shared views** · **task templates & recurring tasks** · global search · **command palette (⌘K)** and keyboard shortcuts (`?` lists them) · light/dark themes · installable PWA that **works offline for recently viewed boards**.
 
-## Connect the integrations (Settings → Workspace, admin only)
+### Planning & reporting
+**Sprints** with backlog planning, burndown (scope-creep aware) and velocity · **epics & roadmap** · **releases** with generated release notes · **capacity & time-off** planning · **reports** (throughput, cycle time, aging, workload, time logged) with CSV export (formula-injection safe) · dashboards scoped to all teams / one team / one person.
 
-Everything works out of the box in **simulated** mode: emails/texts are recorded in *Settings → Email, phone & AI → Delivery log* instead of being sent. To go live:
+### Teams, roles & access
+Org roles **Admin / Manager / Member / Viewer / Guest** · team roles (Lead/Member) · **per-project roles** (manager/editor/commenter/viewer) that can restrict a teammate or grant a client access to one project · guests only see projects they're invited to and the people on them · invite links · **audit log** · **two-step verification (TOTP + recovery codes)** · **session management** (see devices, sign out everywhere) · OIDC **single sign-on** (Okta, Entra ID, Auth0, Keycloak, Google…) with domain-based auto-provisioning · API tokens.
 
-1. **Public URL** — set `BASE_URL` (or *Public URL* in the UI) to where the app is reachable, e.g. `https://tasks.acme.dev`. Google and Twilio need HTTPS callbacks.
-2. **Gmail** — Google Cloud console → enable the *Gmail API* → OAuth consent screen → Credentials → *OAuth client ID (Web)*. Add the redirect URI shown in the Workspace tab (`<BASE_URL>/api/integrations/google/callback`). Paste Client ID/Secret. Then each user clicks **Connect Gmail**. (Scopes: `gmail.send`, `gmail.modify` — the latter is needed to mark processed emails read; while your OAuth app is in *Testing* mode, add your team as test users, or publish it internally for a Workspace domain.)
-3. **Phone** — Twilio console → copy Account SID, Auth Token and a number (and/or WhatsApp sender). Set the number's **incoming message webhook** (HTTP POST) to `<BASE_URL>/api/webhooks/twilio` — requests are verified with Twilio's signature. Users add their number in *Integrations* and confirm a 6-digit code.
-4. **AI** — paste an Anthropic API key (`ANTHROPIC_API_KEY`). Default model is `claude-sonnet-5-5`; override with `ANTHROPIC_MODEL`.
+### Automation & integrations
+No-code **automation rules** · due-date reminders, daily briefing, weekly stakeholder digest · **Gmail** (OAuth: notifications, email→task via the `TaskBoard` label, replies to notification emails become comments — only if DKIM/SPF passed) · **SMS / WhatsApp** via Twilio with two-way commands (`list`, `done API-12`, `add …`) · **web push** (RFC 8291, verified against the RFC test vector) · **Slack** slash command + Slack/Teams/JSON **outgoing webhooks** (HMAC-signed, SSRF-guarded, retried, delivery log) · **GitHub / GitLab** (PR opened → In review, merged → Done, commits comment on tasks) · **Sentry / PagerDuty / Datadog / generic incident hooks** (dedupe, acknowledge, auto-resolve) · personal **iCalendar feed** for Google/Apple/Outlook · public REST API with scoped tokens.
+
+### AI (Claude — with offline fallbacks for everything)
+Plain English → task · subtask breakdown · description rewrite with acceptance criteria · priority/estimate/owner suggestions **calibrated on how long your past work really took** · **auto-triage** of new tasks (opt-in per project) · **duplicate detection** while typing · **meeting notes → tasks** · **natural-language search** ("urgent bugs Sofia shipped last week") · **sprint planning** against real capacity · risk radar · standups · release notes · chat assistant · **voice input**. Without an Anthropic key, deterministic local versions run instead.
+
+## Connect integrations (Settings → Workspace, admin only)
+
+Everything works out of the box in **simulated** mode: emails/texts are recorded in *Settings → Email, phone & AI → Delivery log*. To go live:
+
+1. **Public URL** — set `BASE_URL`; Google, Twilio, Slack and Git hosts need HTTPS callbacks.
+2. **Gmail** — Google Cloud → enable *Gmail API* → OAuth client (Web). Redirect URI: `<BASE_URL>/api/integrations/google/callback`. Scopes `gmail.send`, `gmail.modify`.
+3. **Twilio** — Account SID/Auth token/number; incoming-message webhook → `<BASE_URL>/api/webhooks/twilio`.
+4. **Anthropic** — `ANTHROPIC_API_KEY` (default model `claude-sonnet-5-5`).
+5. **SSO** — issuer URL + client id/secret; redirect URI `<BASE_URL>/api/auth/sso/callback`.
+6. **Slack** — slash command `/taskboard` → `<BASE_URL>/api/hooks/slack`; paste the signing secret. For Slack/Teams *notifications*, add an incoming-webhook URL under a project's settings.
+7. **GitHub/GitLab/Sentry/PagerDuty/Datadog** — project settings → *Inbound integrations* gives you the URL (and secret) to paste into the other tool. Put the task key (e.g. `API-12`) in the PR title or branch name.
 
 ## Deploy
-
-It needs a process that stays up (the scheduler sends reminders/briefings and polls Gmail every couple of minutes) and a persistent disk for `DATA_DIR` (SQLite).
+Needs a long-running process (scheduler: reminders, digests, recurring tasks, Gmail polling, backups) and a persistent `DATA_DIR`.
 
 ```bash
 docker build -t taskboard . && docker run -d -p 3000:3000 -v taskboard-data:/data -e BASE_URL=https://tasks.acme.dev taskboard
 ```
-
-Put it behind HTTPS (Caddy, nginx, Fly.io, Render, …); send `X-Forwarded-Proto: https` so session cookies are marked `Secure`.
+Terminate TLS in front (Caddy/nginx/Fly/Render) and forward `X-Forwarded-Proto: https` so cookies are `Secure`.
+**Back up** `data/backups` (automatic, daily, last 7), plus `data/uploads` and `data/.secret` (decrypts stored OAuth tokens/API keys; keep it separate from the database backups). Restore = stop the server and replace `data/taskboard.db`.
 
 ## Security notes
-
-Passwords: scrypt. Sessions: signed, HttpOnly, SameSite=Lax cookies; writes require `application/json` (CSRF-safe). OAuth tokens and API keys are encrypted at rest (AES-256-GCM, key derived from `SESSION_SECRET` / `data/.secret` — back that file up). Strict CSP, login rate-limiting, role checks on every route (see `tests/api.test.js`).
+scrypt passwords · signed HttpOnly SameSite cookies backed by revocable server-side sessions · CSRF-safe (JSON-only writes, custom header on uploads) · optional TOTP 2FA (SSO logins rely on the identity provider's MFA) · secrets & OAuth tokens encrypted at rest (AES-256-GCM) · strict CSP · login/2FA/API rate limits · SSRF-guarded outbound requests (address validated at connect time) · uploads served with `nosniff` + sandbox CSP and forced download for anything that isn't an image/PDF/text · role checks on every route (see `tests/`).
 
 ## Layout
-
 ```
-server/   index.js (HTTP) · routes.js (REST API) · tasks.js (domain) · access.js (roles/visibility)
-          automations.js · notifications.js · scheduler.js · ai.js · commands.js (phone bot)
-          channels/google.js · channels/twilio.js · delivery.js (outbox) · seed.js
-public/   no-build SPA: js/main.js (shell/router) · js/views/* · css/app.css (design tokens, light/dark)
-tests/    node:test API suite
+server/   index.js · routes.js (REST) · tasks.js · access.js (roles) · automations · notifications · scheduler
+          ai.js · triage.js · planning.js · capacity.js · reports.js · hooks.js · webhooks.js · sso.js · totp.js
+          channels/{google,twilio,webpush}.js · safehttp.js · crypto.js · backup.js · seed.js
+public/   no-build SPA: js/main.js · js/views/* · js/qr.js (QR generator) · sw.js (offline + push)
+tests/    56 tests across 6 files (RFC 6238/8291 vectors included)
 ```
 
-Not included (by design, to stay dependency-free): background Web Push when the app is closed (use SMS/email), per-project custom workflow columns (statuses are Backlog → To do → In progress → In review → Done), file attachments.
+## What is *not* included
+SAML (use OIDC) · Postgres / multi-instance deployment (single SQLite file; use the backups) · native iOS/Android apps (the PWA installs to the home screen) · two-way Google Calendar sync and focus-time blocking (read-only ICS feed instead) · offline *editing* (offline is read-only) · per-project dependency arrows on the timeline · file storage other than local disk. The Gmail, Twilio, Slack, SSO, GitHub and Claude integrations are implemented against their public APIs and unit-tested with local stand-ins, but I could not exercise them against the live services without credentials.

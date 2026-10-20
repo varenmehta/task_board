@@ -24,7 +24,24 @@ export async function renderAuth(root, mode, onAuthed) {
     e.preventDefault();
     err.classList.add('hide');
     btn.disabled = true;
-    try { onAuthed(await fn()); } catch (ex) { showErr(ex.message); btn.disabled = false; }
+    try {
+      const r = await fn();
+      if (r?.needs_2fa) return twoFactor(r.ticket);
+      onAuthed(r);
+    } catch (ex) { showErr(ex.message); btn.disabled = false; }
+  }
+
+  // second step when the account has two-factor authentication on
+  function twoFactor(ticket) {
+    const code = h('input', { class: 'input', name: 'code', autocomplete: 'one-time-code', inputmode: 'text', placeholder: '123456', style: { height: '46px', fontSize: '20px', letterSpacing: '.15em', textAlign: 'center' }, required: true });
+    const err2 = h('div', { class: 'error-msg hide' });
+    const go = h('button', { class: 'btn primary', style: { height: '40px' } }, 'Verify & sign in');
+    const f2 = h('form', { class: 'auth-card', onsubmit: async e => {
+      e.preventDefault(); go.disabled = true; err2.classList.add('hide');
+      try { onAuthed(await api.post('/login/2fa', { ticket, code: code.value })); } catch (ex) { err2.textContent = ex.message; err2.classList.remove('hide'); go.disabled = false; code.select(); }
+    } }, h('div', h('h2', 'Two-step verification'), h('p', { class: 'muted', style: { marginTop: '4px' } }, 'Enter the 6-digit code from your authenticator app, or one of your recovery codes.')), code, err2, go, h('a', { href: '#/', onclick: () => location.reload() }, '← Back to sign in'));
+    mount(root, h('div', { class: 'auth' }, hero(), h('div', { class: 'auth-form' }, f2)));
+    code.focus();
   }
 
   if (mode === 'setup') {

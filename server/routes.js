@@ -3,7 +3,11 @@ import { Router } from './router.js';
 import { all, get, run, insert, tx, parseJSON, getSetting, setSetting, SETTING_KEYS, SECRET_KEYS, INTERNAL_KEYS } from './db.js';
 import { ORG_ROLES, PROJECT_ROLES, DEFAULT_STATUSES, TASK_TYPES } from './config.js';
 import { bad, forbidden, notFound, handleOf, pickColor, todayStr, addDays, HttpError, clip } from './util.js';
-import { hashPassword, verifyPassword, sessionCookie, clearCookie, rateLimit, sign, verify } from './auth.js';
+import { hashPassword, verifyPassword, startSession, clearCookie, rateLimit, sign, verify, revokeSession, revokeOtherSessions, listSessions, sidFromToken } from './auth.js';
+import * as TOTP from './totp.js';
+import * as BACKUP from './backup.js';
+import fs from 'node:fs';
+import { seal, open as unseal } from './crypto.js';
 import { teamRole, canViewProject, canEditProject, canManageTeam, canManageProject, projectRole, visibleProjects, projectMembers } from './access.js';
 import { projectStatuses, validateStatuses, statusIds } from './statuses.js';
 import * as TIME from './time.js';
@@ -48,7 +52,7 @@ const hasUsers = () => !!get('SELECT 1 FROM users LIMIT 1');
 function me(u) {
   const phoneSet = !!u.phone;
   return {
-    ...publicUser(u), slack_id: u.slack_id, phone: u.phone, phone_verified: !!u.phone_verified, prefs: getPrefs(u),
+    ...publicUser(u), slack_id: u.slack_id, totp_enabled: !!u.totp_enabled, phone: u.phone, phone_verified: !!u.phone_verified, prefs: getPrefs(u),
     unread: unreadCount(u.id), phoneSet,
     teams: all('SELECT t.id, t.name, tm.role FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? ORDER BY t.name', u.id),
   };
@@ -94,7 +98,7 @@ R.post('/api/setup', ({ body, req, res }) => {
     insert('INSERT INTO projects(team_id,key,name,description,color) VALUES(?,?,?,?,?)', team, 'TB', 'First project', 'Your first board — rename or replace it any time.', pickColor(0));
   }
   seedDefaultRules(id);
-  res.setHeader('Set-Cookie', sessionCookie(id, req.headers['x-forwarded-proto'] === 'https'));
+  res.setHeader('Set-Cookie', startSession(id, req));
   return me(user);
 }, { public: true });
 
@@ -103,12 +107,33 @@ R.post('/api/login', ({ body, req, res }) => {
   if (!rateLimit('login:' + (req.socket.remoteAddress || '') + email, 8)) throw new HttpError(429, 'Too many attempts — try again in a minute');
   const u = get('SELECT * FROM users WHERE email=? AND active=1', email);
   if (!u || !verifyPassword(String(body.password || ''), u.password_hash)) { audit(u || null, 'auth.login_failed', email, {}, req); throw new HttpError(401, 'Incorrect email or password'); }
-  res.setHeader('Set-Cookie', sessionCookie(u.id, req.headers['x-forwarded-proto'] === 'https'));
+  if (u.totp_enabled) return { needs_2fa: true, ticket: sign({ uid: u.id, k: '2fa' }, 300) };
+  res.setHeader('Set-Cookie', startSession(u.id, req));
   audit(u, 'auth.login', u.email, {}, req);
   return me(u);
 }, { public: true });
 
-R.post('/api/logout', ({ res }) => { res.setHeader('Set-Cookie', clearCookie); return { ok: true }; }, { public: true });
+R.post('/api/login/2fa', ({ body, req, res }) => {
+  const t = verify(String(body.ticket || ''));
+  if (!t || t.k !== '2fa') throw new HttpError(401, 'Your sign-in expired — start again');
+  if (!rateLimit('2fa:' + t.uid, 8)) throw new HttpError(429, 'Too many attempts — try again in a minute');
+  const u = get('SELECT * FROM users WHERE id=? AND active=1', t.uid);
+  if (!u || !u.totp_enabled) throw new HttpError(401, 'Sign-in failed');
+  const code = String(body.code || '').trim();
+  const step = TOTP.verifyTotp(unseal(u.totp_secret), code);
+  if (step && step > u.totp_last) run('UPDATE users SET totp_last=? WHERE id=?', step, u.id);
+  else {
+    const left = TOTP.consumeRecovery(parseJSON(u.recovery_codes, []), code);
+    if (!left) { audit(u, 'auth.2fa_failed', u.email, {}, req); throw new HttpError(401, step ? 'That code was already used — wait for the next one' : 'Incorrect code'); }
+    run('UPDATE users SET recovery_codes=? WHERE id=?', JSON.stringify(left), u.id);
+    audit(u, 'auth.recovery_code_used', u.email, { remaining: left.length }, req);
+  }
+  res.setHeader('Set-Cookie', startSession(u.id, req));
+  audit(u, 'auth.login', u.email, { two_factor: true }, req);
+  return me(u);
+}, { public: true });
+
+R.post('/api/logout', ({ res, req, user }) => { if (user) revokeSession(user.id, user._sid); res.setHeader('Set-Cookie', clearCookie); return { ok: true }; }, { public: true });
 
 R.get('/api/invite/:token', ({ params }) => {
   const u = get('SELECT name,email FROM users WHERE invite_token=? AND active=1', params.token);
@@ -121,7 +146,7 @@ R.post('/api/invite/:token', ({ params, body, req, res }) => {
   if (!u) throw notFound('This invitation is no longer valid');
   if (String(body.password || '').length < 8) throw bad('Password must be at least 8 characters');
   run('UPDATE users SET password_hash=?, invite_token=NULL, name=? WHERE id=?', hashPassword(body.password), String(body.name || u.name).trim() || u.name, u.id);
-  res.setHeader('Set-Cookie', sessionCookie(u.id, req.headers['x-forwarded-proto'] === 'https'));
+  res.setHeader('Set-Cookie', startSession(u.id, req));
   return me(get('SELECT * FROM users WHERE id=?', u.id));
 }, { public: true });
 
@@ -145,6 +170,8 @@ R.patch('/api/me', ({ user, body }) => {
     if (String(body.password).length < 8) throw bad('Password must be at least 8 characters');
     if (!verifyPassword(String(body.current_password || ''), user.password_hash)) throw bad('Current password is incorrect');
     run('UPDATE users SET password_hash=? WHERE id=?', hashPassword(body.password), user.id);
+    revokeOtherSessions(user.id, user._sid);
+    audit(user, 'auth.password_changed', user.email, {});
   }
   return me(get('SELECT * FROM users WHERE id=?', user.id));
 });
@@ -647,7 +674,7 @@ R.get('/api/auth/sso/callback', async ({ req, res, query }) => {
     const ident = await SSO.finish(cfg, query.code, query.state);
     const u = SSO.userForSso(ident);
     audit(u, 'auth.sso_login', u.email, {}, req);
-    res.writeHead(302, { Location: '/', 'Set-Cookie': sessionCookie(u.id, req.headers['x-forwarded-proto'] === 'https') }); res.end();
+    res.writeHead(302, { Location: '/', 'Set-Cookie': startSession(u.id, req) }); res.end();
   } catch (e) { back(e.message); }
   return undefined;
 }, { public: true, stream: true });
@@ -658,6 +685,61 @@ R.post('/api/push/unsubscribe', ({ user, body }) => { PUSH.unsubscribe(user.id, 
 R.post('/api/push/test', async ({ user }) => ({ sent: await PUSH.pushTo(user.id, { title: 'TaskBoard', body: 'Push notifications are working 🎉', url: '/#/inbox' }) }));
 
 R.get('/api/audit', ({ user, query }) => { needAdmin(user); return listAudit(query); });
+
+// ============ sessions, two-factor auth, backups ============
+R.get('/api/sessions', ({ user }) => listSessions(user.id, user._sid));
+R.del('/api/sessions/:id', ({ user, params }) => { revokeSession(user.id, params.id); return { ok: true }; });
+R.post('/api/sessions/revoke-others', ({ user, req }) => { const n = revokeOtherSessions(user.id, user._sid); audit(user, 'auth.sessions_revoked', user.email, { n }, req); return { revoked: n }; });
+
+R.post('/api/me/2fa/setup', ({ user }) => {
+  if (user.totp_enabled) throw bad('Two-factor authentication is already on');
+  const secret = TOTP.newSecret();
+  run('UPDATE users SET totp_secret=?, totp_last=0 WHERE id=?', seal(secret), user.id);
+  return { secret, uri: TOTP.otpauthUri(secret, user.email, getSetting('workspace_name') || 'TaskBoard') };
+});
+R.post('/api/me/2fa/enable', ({ user, body, req }) => {
+  const fresh = get('SELECT * FROM users WHERE id=?', user.id);
+  if (fresh.totp_enabled || !fresh.totp_secret) throw bad('Start setup first');
+  if (!rateLimit('2fa-setup:' + user.id, 8)) throw new HttpError(429, 'Too many attempts');
+  const step = TOTP.verifyTotp(unseal(fresh.totp_secret), body.code);
+  if (!step) throw bad('That code is not valid — check your authenticator app’s clock and try again');
+  const rc = TOTP.newRecoveryCodes();
+  run('UPDATE users SET totp_enabled=1, totp_last=?, recovery_codes=? WHERE id=?', step, JSON.stringify(rc.hashes), user.id);
+  revokeOtherSessions(user.id, user._sid);
+  audit(user, 'auth.2fa_enabled', user.email, {}, req);
+  return { recovery_codes: rc.plain };
+});
+R.post('/api/me/2fa/disable', ({ user, body, req }) => {
+  const fresh = get('SELECT * FROM users WHERE id=?', user.id);
+  if (!fresh.totp_enabled) throw bad('Two-factor authentication is not on');
+  if (!rateLimit('2fa-off:' + user.id, 6)) throw new HttpError(429, 'Too many attempts');
+  if (!verifyPassword(String(body.password || ''), fresh.password_hash)) throw bad('Password is incorrect');
+  if (!TOTP.verifyTotp(unseal(fresh.totp_secret), body.code) && !TOTP.consumeRecovery(parseJSON(fresh.recovery_codes, []), body.code)) throw bad('Code is incorrect');
+  run("UPDATE users SET totp_enabled=0, totp_secret=NULL, recovery_codes='[]' WHERE id=?", user.id);
+  audit(user, 'auth.2fa_disabled', user.email, {}, req);
+  return { ok: true };
+});
+R.get('/api/me/2fa', ({ user }) => ({ enabled: !!user.totp_enabled, recovery_left: parseJSON(user.recovery_codes, []).length }));
+R.post('/api/users/:id/2fa/reset', ({ user, params, req }) => {
+  needAdmin(user);
+  const u = get('SELECT * FROM users WHERE id=? AND active=1', params.id);
+  if (!u) throw notFound('User not found');
+  run("UPDATE users SET totp_enabled=0, totp_secret=NULL, recovery_codes='[]' WHERE id=?", u.id);
+  run('UPDATE sessions SET revoked=1 WHERE user_id=?', u.id);
+  audit(user, 'user.2fa_reset', u.email, {}, req);
+  return { ok: true };
+});
+
+R.get('/api/admin/backups', ({ user }) => { needAdmin(user); return BACKUP.listBackups(); });
+R.post('/api/admin/backups', ({ user, req }) => { needAdmin(user); const name = BACKUP.backupNow(); audit(user, 'backup.created', name, {}, req); return { name }; });
+R.get('/api/admin/backups/:name', ({ user, params, res, req }) => {
+  needAdmin(user);
+  const p = BACKUP.backupPath(params.name);
+  audit(user, 'backup.downloaded', params.name, {}, req);
+  res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${params.name}"`, 'Content-Length': fs.statSync(p).size, 'Cache-Control': 'no-store' });
+  fs.createReadStream(p).pipe(res);
+  return undefined;
+}, { stream: true });
 
 // ============ notifications ============
 R.get('/api/notifications', ({ user }) => ({

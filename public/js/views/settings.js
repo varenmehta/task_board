@@ -1,6 +1,7 @@
 import { h, mount, icon, toast, ago, modal } from '../dom.js';
 import { api } from '../api.js';
 import { state } from '../state.js';
+import { qrSvg } from '../qr.js';
 
 const TABS = [['profile', 'Profile', 'user'], ['notifications', 'Notifications', 'bell'], ['integrations', 'Email, phone & AI', 'link'], ['developer', 'API & calendar', 'key'], ['workspace', 'Workspace (admin)', 'shield'], ['audit', 'Audit log (admin)', 'history']];
 
@@ -29,7 +30,43 @@ async function profile(box) {
         h('div', h('button', { class: 'btn primary', onclick: async () => { try { Object.assign(state.me, await api.patch('/me', v)); toast('Profile saved', 'success'); } catch (e) { toast(e.message, 'error'); } } }, 'Save profile')))),
     h('div', { class: 'card setting-card' }, h('h3', 'Change password'), h('div', { class: 'col', style: { gap: '12px', marginTop: '12px' } },
       field('Current password', h('input', { class: 'input', type: 'password', autocomplete: 'current-password', oninput: e => (pw.current_password = e.target.value) })), field('New password', h('input', { class: 'input', type: 'password', autocomplete: 'new-password', oninput: e => (pw.password = e.target.value) }), 'At least 8 characters'),
-      h('div', h('button', { class: 'btn', onclick: async () => { try { await api.patch('/me', { ...v, ...pw }); toast('Password updated', 'success'); } catch (e) { toast(e.message, 'error'); } } }, 'Update password')))));
+      h('div', h('button', { class: 'btn', onclick: async () => { try { await api.patch('/me', { ...v, ...pw }); toast('Password updated — other devices were signed out', 'success'); } catch (e) { toast(e.message, 'error'); } } }, 'Update password')))),
+    await securityCards(me));
+}
+
+// ---------- security: two-factor auth + active sessions ----------
+async function securityCards(me) {
+  const twoFa = h('div', { class: 'card setting-card' });
+  const sessions = h('div', { class: 'card setting-card' });
+  const svgNode = text => new DOMParser().parseFromString(qrSvg(text, { scale: 5 }), 'image/svg+xml').documentElement;
+  const showCodes = codes => modal({ title: 'Save your recovery codes', width: 520, body: [h('p', { class: 'muted small' }, 'Each code works once if you lose your phone. Store them somewhere safe — they will not be shown again.'),
+    h('div', { class: 'mono', style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', background: 'var(--surface-2)', padding: '14px', borderRadius: '10px' } }, codes.map(c => h('span', c)))],
+  actions: [{ label: 'Copy', onClick: () => { navigator.clipboard?.writeText(codes.join('\n')); toast('Copied'); return false; }, keepOpen: true }, { label: 'I saved them', kind: 'primary' }] });
+  const paint2fa = async () => {
+    const st = await api.get('/me/2fa');
+    mount(twoFa, h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Two-step verification'), st.enabled ? h('span', { class: 'status-pill ok' }, 'On') : h('span', { class: 'status-pill off' }, 'Off')),
+      h('p', { class: 'muted small', style: { margin: '4px 0 12px' } }, 'Protect your account with a code from an authenticator app (Google Authenticator, 1Password, Authy…) in addition to your password.'),
+      st.enabled ? h('div', { class: 'row' }, h('span', { class: 'small muted grow' }, `${st.recovery_left} recovery codes left`), h('button', { class: 'btn danger', onclick: () => {
+        const pw = h('input', { class: 'input', type: 'password', placeholder: 'Your password' }), cd = h('input', { class: 'input', placeholder: 'Authenticator or recovery code' });
+        modal({ title: 'Turn off two-step verification', body: [pw, cd], actions: [{ label: 'Cancel' }, { label: 'Turn off', kind: 'danger', onClick: async () => { try { await api.post('/me/2fa/disable', { password: pw.value, code: cd.value }); toast('Two-step verification is off'); paint2fa(); } catch (e) { toast(e.message, 'error'); return false; } } }] });
+      } }, 'Turn off'))
+        : h('button', { class: 'btn primary', onclick: async () => {
+          const setup = await api.post('/me/2fa/setup').catch(e => { toast(e.message, 'error'); return null; });
+          if (!setup) return;
+          const cd = h('input', { class: 'input', placeholder: '6-digit code', inputmode: 'numeric', maxlength: 6, style: { letterSpacing: '.2em', textAlign: 'center', fontSize: '18px' } });
+          modal({ title: 'Set up two-step verification', width: 480, body: [h('p', { class: 'muted small' }, '1. Scan this QR code with your authenticator app'), h('div', { style: { display: 'grid', placeItems: 'center' } }, svgNode(setup.uri)),
+            h('p', { class: 'small muted' }, 'Can’t scan? Enter this key manually: '), h('input', { class: 'input mono', readonly: true, value: setup.secret, onfocus: e => e.target.select() }), h('p', { class: 'muted small' }, '2. Enter the 6-digit code it shows'), cd],
+          actions: [{ label: 'Cancel' }, { label: 'Turn on', kind: 'primary', onClick: async () => { try { const r = await api.post('/me/2fa/enable', { code: cd.value }); paint2fa(); showCodes(r.recovery_codes); } catch (e) { toast(e.message, 'error'); return false; } } }] });
+        } }, 'Set up'));
+  };
+  const paintSessions = async () => {
+    const list = await api.get('/sessions');
+    mount(sessions, h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Where you’re signed in'), list.length > 1 ? h('button', { class: 'btn sm danger', onclick: async () => { const r = await api.post('/sessions/revoke-others'); toast(`Signed out of ${r.revoked} other device(s)`); paintSessions(); } }, 'Sign out everywhere else') : null),
+      list.map(s => { const ua = s.ua || ''; const dev = /iPhone|iPad/.test(ua) ? 'iPhone / iPad' : /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'Unknown device'; const br = /Edg\//.test(ua) ? 'Edge' : /Firefox/.test(ua) ? 'Firefox' : /Chrome/.test(ua) ? 'Chrome' : /Safari/.test(ua) ? 'Safari' : 'Browser';
+        return h('div', { class: 'setting-row' }, icon('phone', 18), h('div', { class: 'grow' }, h('b', `${br} on ${dev}`), s.current ? h('span', { class: 'chip green', style: { marginLeft: '8px' } }, 'This device') : null, h('div', { class: 'small faint' }, `${s.ip || ''} · active ${ago(s.last_seen)}`)), s.current ? null : h('button', { class: 'btn sm', onclick: async () => { await api.del('/sessions/' + s.id); paintSessions(); } }, 'Sign out')); }));
+  };
+  await paint2fa(); await paintSessions();
+  return [twoFa, sessions];
 }
 
 // ---------- notifications ----------
@@ -94,6 +131,18 @@ async function developer(box) {
     h('div', { class: 'card setting-card' }, h('h3', 'Calendar feed'), h('p', { class: 'muted small', style: { margin: '4px 0 10px' } }, 'Subscribe in Google Calendar, Apple Calendar or Outlook to see your task due dates, sprint boundaries and releases next to your meetings. Treat the link like a password.'),
       h('div', { class: 'row' }, h('input', { class: 'input mono', readonly: true, value: cal.url, onfocus: e => e.target.select() }), h('button', { class: 'btn', onclick: () => copy(cal.url) }, icon('copy', 14), 'Copy'), h('button', { class: 'btn', onclick: async () => { if (confirm('Generate a new link? The old one stops working.')) { await api.post('/me/calendar/rotate'); developer(box); } } }, 'Reset')),
       h('p', { class: 'hint', style: { marginTop: '8px' } }, 'Google Calendar: Other calendars → + → From URL. It refreshes roughly every few hours.')));
+}
+
+function backupsCard() {
+  const card = h('div', { class: 'card setting-card' });
+  const paint = async () => {
+    const list = await api.get('/admin/backups');
+    mount(card, h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Backups'), h('button', { class: 'btn sm', onclick: async () => { await api.post('/admin/backups'); toast('Backup created', 'success'); paint(); } }, icon('plus', 14), 'Back up now')),
+      h('p', { class: 'muted small', style: { margin: '2px 0 10px' } }, 'The database is backed up automatically every day (last 7 kept) into data/backups. Also copy data/uploads and data/.secret (needed to decrypt stored keys) to safe storage. CLI: npm run backup.'),
+      list.length ? list.slice(0, 7).map(b => h('div', { class: 'setting-row' }, icon('download', 16), h('div', { class: 'grow' }, h('b', { class: 'mono small' }, b.name), h('div', { class: 'small faint' }, `${(b.size / 1024).toFixed(0)} KB · ${ago(b.created_at)}`)), h('a', { class: 'btn sm', href: '/api/admin/backups/' + b.name }, 'Download'))) : h('p', { class: 'faint small' }, 'No backups yet.'));
+  };
+  paint().catch(() => {});
+  return card;
 }
 
 // ---------- audit log ----------
@@ -174,6 +223,7 @@ async function workspace(box) {
       secret('slack_signing_secret', 'Signing secret', ''), secret('slack_bot_token', 'Bot token (optional)', 'xoxb-…', 'With users:read.email scope, people are matched to TaskBoard by email automatically; otherwise they paste their Slack member ID in Profile.')),
     section('AI (Anthropic Claude)', 'Powers the assistant, task drafting, breakdowns, risk analysis and briefings. Without a key, offline smart-parsing is used.',
       secret('anthropic_api_key', 'API key', 'sk-ant-…', 'Get one at console.anthropic.com. Stored on your server only.'), text('anthropic_model', 'Model', 'claude-sonnet-5-5', 'Leave blank for the default.')),
+    backupsCard(),
     h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: save }, 'Save settings'),
       h('button', { class: 'btn', onclick: async () => { const r = await api.post('/admin/run-scheduler').catch(e => ({ error: e.message })); toast(r.error || `Scheduler ran: ${r.reminders} reminder(s), ${r.digests} briefing(s), ${r.inbox} email task(s)`); } }, icon('zap', 14), 'Run scheduler now')));
 }
