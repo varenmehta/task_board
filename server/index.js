@@ -56,6 +56,7 @@ export const server = http.createServer(async (req, res) => {
     }
     const result = await route.handler({ req, res, params, query: Object.fromEntries(url.searchParams), body, user, raw: rawBody });
     if (route.opts.stream || res.writableEnded) return;
+    if (result?.__raw) { res.writeHead(result.__raw.status || 200, result.__raw.headers); return res.end(result.__raw.body); }
     if (result?.__xml) { res.writeHead(200, { 'Content-Type': 'text/xml' }); return res.end(result.__xml); }
     send(res, 200, result ?? { ok: true });
   } catch (e) {

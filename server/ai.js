@@ -272,3 +272,16 @@ export async function emailToTask({ subject, body, from }, ctx) {
   const local = localParseTask(subject, ctx);
   return { ...base, title: local.title || base.title, description: `${clip(body, 4000)}${body ? '\n\n' : ''}— via email from ${from}`.trim(), _text: text };
 }
+
+
+// ---------- 10. release notes ----------
+export async function releaseNotes(release, tasks, local) {
+  const done = tasks.filter(t => t.status === 'done');
+  if (aiMode() === 'local' || !done.length) return { ai: false, notes: local };
+  try {
+    const text = await ask(`Write polished, user-facing release notes in Markdown for "${release.name}${release.version ? ' ' + release.version : ''}".
+Group into New / Improvements / Fixes (omit empty groups), one friendly line per item, keep task keys in parentheses. Don't invent features.
+Shipped items:\n${done.map(t => `${t.ref} | ${t.type} | ${t.title}`).join('\n')}`, { maxTokens: 900 });
+    return { ai: true, notes: text };
+  } catch (e) { return { ai: false, warning: e.message, notes: local }; }
+}

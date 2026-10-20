@@ -10,6 +10,7 @@ import { googleConfigured, getIntegration, fetchLabelledEmails, markRead } from 
 import { briefingBlurb, emailToTask } from './ai.js';
 import { getSetting } from './db.js';
 import { runRecurrences } from './recurring.js';
+import { snapshotActiveSprints } from './planning.js';
 
 const once = key => {
   if (get('SELECT 1 FROM sent_reminders WHERE key=?', key)) return false;
@@ -115,7 +116,7 @@ export function startScheduler() {
     safe('digests', () => runDigests());
     safe('inbox', () => (tick % 2 === 0 ? pollInbox() : 0));
     safe('recurring', () => (tick % 5 === 2 ? runRecurrences() : 0));
-    if (tick % 60 === 0) safe('prune', pruneOutbox);
+    if (tick % 60 === 0) { safe('prune', pruneOutbox); safe('snapshots', snapshotActiveSprints); }
   };
   setTimeout(loop, 5_000).unref();
   setInterval(loop, 60_000).unref();

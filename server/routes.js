@@ -9,6 +9,8 @@ import { projectStatuses, validateStatuses, statusIds } from './statuses.js';
 import * as TIME from './time.js';
 import * as ATT from './attachments.js';
 import * as REC from './recurring.js';
+import * as PLAN from './planning.js';
+import { report, exportCsv } from './reports.js';
 import * as T from './tasks.js';
 import { addClient, pushTo } from './events.js';
 import { usersWhoCanView } from './access.js';
@@ -546,6 +548,39 @@ R.post('/api/projects/:id/recurrences', ({ user, params, body }) => ({ id: REC.s
 R.put('/api/projects/:id/recurrences/:rid', ({ user, params, body }) => ({ id: REC.saveRecurrence(user, Number(params.id), { ...body, id: Number(params.rid) }) }));
 R.del('/api/projects/:id/recurrences/:rid', ({ user, params }) => { REC.deleteRecurrence(user, Number(params.id), Number(params.rid)); return { ok: true }; });
 
+
+// ============ planning: sprints, releases, roadmap ============
+R.get('/api/projects/:id/sprints', ({ user, params }) => { loadProject(user, params.id); return PLAN.listSprints(Number(params.id)); });
+R.post('/api/projects/:id/sprints', ({ user, params, body }) => ({ id: PLAN.createSprint(user, Number(params.id), body) }));
+R.patch('/api/sprints/:id', ({ user, params, body }) => { PLAN.updateSprint(user, Number(params.id), body); return { ok: true }; });
+R.del('/api/sprints/:id', ({ user, params }) => { PLAN.deleteSprint(user, Number(params.id)); return { ok: true }; });
+R.post('/api/sprints/:id/start', ({ user, params }) => { PLAN.startSprint(user, Number(params.id)); return { ok: true }; });
+R.post('/api/sprints/:id/close', ({ user, params, body }) => PLAN.closeSprint(user, Number(params.id), body));
+
+R.get('/api/projects/:id/releases', ({ user, params }) => { loadProject(user, params.id); return PLAN.listReleases(Number(params.id)); });
+R.post('/api/projects/:id/releases', ({ user, params, body }) => ({ id: PLAN.saveRelease(user, Number(params.id), body) }));
+R.patch('/api/releases/:id', ({ user, params, body }) => {
+  const r = get('SELECT * FROM releases WHERE id=?', params.id); if (!r) throw notFound('Release not found');
+  PLAN.saveRelease(user, r.project_id, { ...r, ...body }, r.id); return { ok: true };
+});
+R.del('/api/releases/:id', ({ user, params }) => { PLAN.deleteRelease(user, Number(params.id)); return { ok: true }; });
+R.post('/api/releases/:id/ship', ({ user, params }) => { PLAN.markReleased(user, Number(params.id)); return { ok: true }; });
+R.post('/api/releases/:id/notes', async ({ user, params }) => {
+  const r = get('SELECT * FROM releases WHERE id=?', params.id); if (!r) throw notFound('Release not found');
+  loadProject(user, r.project_id);
+  const tasks = PLAN.releaseTasks(r.id);
+  return AI.releaseNotes(r, tasks, PLAN.localReleaseNotes(r, tasks));
+});
+R.get('/api/projects/:id/roadmap', ({ user, params }) => { loadProject(user, params.id); return PLAN.roadmap(Number(params.id)); });
+
+// ============ reports ============
+R.get('/api/reports', ({ user, query }) => { if (user.role === 'guest') throw forbidden(); return report(user, query); });
+R.get('/api/reports/export', ({ user, query }) => {
+  if (user.role === 'guest') throw forbidden();
+  const csv = exportCsv(user, query);
+  return { __raw: { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="taskboard-${query.type === 'time' ? 'time' : 'tasks'}.csv"`, 'Cache-Control': 'no-store' }, body: '﻿' + csv } };
+});
+
 // ============ notifications ============
 R.get('/api/notifications', ({ user }) => ({
   items: all('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 60', user.id),
@@ -558,7 +593,9 @@ R.post('/api/notifications/read', ({ user, body }) => {
 
 // ============ dashboard ============
 R.get('/api/dashboard', ({ user, query }) => {
-  const projects = visibleProjects(user);
+  let projects = visibleProjects(user);
+  if (query.team_id) projects = projects.filter(p => p.team_id === Number(query.team_id));
+  const focusId = query.user_id ? Number(query.user_id) : user.id;
   const ids = projects.map(p => p.id);
   const today = todayStr();
   const empty = { projects: [], mine: [], workload: [], velocity: [], totals: { open: 0, overdue: 0, done_week: 0, unassigned: 0 } };
@@ -580,7 +617,7 @@ R.get('/api/dashboard', ({ user, query }) => {
       const c = get(`SELECT COUNT(*) total, SUM(status='done') done, SUM(status='in_progress') doing, SUM(status<>'done' AND due_date<?) overdue FROM tasks WHERE project_id=? AND parent_id IS NULL`, today, p.id);
       return { id: p.id, key: p.key, name: p.name, color: p.color, team_name: p.team_name, total: c.total, done: c.done || 0, doing: c.doing || 0, overdue: c.overdue || 0 };
     }),
-    mine: T.listAssigned(user.id).filter(t => t.status !== 'done').slice(0, 8),
+    mine: T.listAssigned(focusId).filter(t => t.status !== 'done' && ids.includes(t.project_id)).slice(0, 8),
     workload, velocity,
   };
 });
