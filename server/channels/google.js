@@ -126,3 +126,17 @@ export async function revoke(userId) {
   if (g?.refresh_token) await fetch('https://oauth2.googleapis.com/revoke?token=' + encodeURIComponent(g.refresh_token), { method: 'POST' }).catch(() => {});
   run('DELETE FROM integrations WHERE user_id=? AND provider=?', userId, 'google');
 }
+
+// Unread inbox mail that looks like a reply to one of our notifications ("[API-12] …").
+export async function fetchReplyCandidates(userId) {
+  const list = await gmail(userId, 'messages?q=' + encodeURIComponent('in:inbox is:unread newer_than:14d') + '&maxResults=25');
+  const out = [];
+  for (const m of list.messages || []) {
+    const full = await gmail(userId, `messages/${m.id}?format=full`);
+    const h = n => full.payload?.headers?.find(x => x.name.toLowerCase() === n)?.value || '';
+    const subject = h('subject');
+    if (!/\[[A-Za-z][A-Za-z0-9]{1,4}-\d+\]/.test(subject)) continue;
+    out.push({ id: m.id, subject, from: h('from'), auth: h('authentication-results'), body: bodyText(full.payload) || full.snippet || '' });
+  }
+  return out;
+}

@@ -157,6 +157,8 @@ addColumn('tasks', 'epic_id', 'INTEGER');
 addColumn('tasks', 'sprint_id', 'INTEGER');
 addColumn('tasks', 'release_id', 'INTEGER');
 addColumn('tasks', 'custom', "TEXT NOT NULL DEFAULT '{}'");
+addColumn('users', 'calendar_token', 'TEXT');
+addColumn('users', 'slack_id', 'TEXT');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS project_members (
@@ -208,6 +210,47 @@ CREATE TABLE IF NOT EXISTS sprint_snapshots (
   remaining REAL NOT NULL, total REAL NOT NULL, done_tasks INTEGER NOT NULL, total_tasks INTEGER NOT NULL,
   PRIMARY KEY (sprint_id, day)
 );
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL, hash TEXT NOT NULL UNIQUE, prefix TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'write',
+  expires_at TEXT, last_used TEXT, created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+CREATE TABLE IF NOT EXISTS webhooks (
+  id INTEGER PRIMARY KEY, project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, secret TEXT NOT NULL, events TEXT NOT NULL DEFAULT '[]',
+  format TEXT NOT NULL DEFAULT 'json', active INTEGER NOT NULL DEFAULT 1, fail_count INTEGER NOT NULL DEFAULT 0,
+  created_by INTEGER, created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id INTEGER PRIMARY KEY, webhook_id INTEGER NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  event TEXT NOT NULL, status TEXT NOT NULL, code INTEGER, error TEXT, attempt INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+CREATE TABLE IF NOT EXISTS incoming_hooks (
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', token_hash TEXT NOT NULL, secret TEXT,
+  created_by INTEGER, last_used TEXT, created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+CREATE TABLE IF NOT EXISTS hook_fingerprints (
+  hook_id INTEGER NOT NULL REFERENCES incoming_hooks(id) ON DELETE CASCADE, fingerprint TEXT NOT NULL,
+  task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, occurrences INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (hook_id, fingerprint)
+);
+CREATE TABLE IF NOT EXISTS task_prs (
+  id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open', updated_at TEXT NOT NULL DEFAULT (${NOW}),
+  UNIQUE (task_id, provider, repo, number)
+);
+CREATE TABLE IF NOT EXISTS audit (
+  id INTEGER PRIMARY KEY, user_id INTEGER, action TEXT NOT NULL, target TEXT, detail TEXT NOT NULL DEFAULT '{}',
+  ip TEXT, created_at TEXT NOT NULL DEFAULT (${NOW})
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit(created_at);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL UNIQUE, p256dh TEXT NOT NULL, auth TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (${NOW})
+);
 CREATE TABLE IF NOT EXISTS releases (
   id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL, version TEXT NOT NULL DEFAULT '', date TEXT, state TEXT NOT NULL DEFAULT 'planned',
@@ -244,8 +287,12 @@ export const SETTING_KEYS = [
   'google_client_id', 'google_client_secret',
   'twilio_account_sid', 'twilio_auth_token', 'twilio_from', 'twilio_whatsapp_from',
   'anthropic_api_key', 'anthropic_model',
+  'google_login', 'oidc_issuer', 'oidc_client_id', 'oidc_client_secret', 'sso_label', 'sso_allowed_domains', 'sso_default_role',
+  'slack_signing_secret', 'slack_bot_token', 'vapid_public', 'vapid_private',
 ];
-export const SECRET_KEYS = new Set(['google_client_secret', 'twilio_auth_token', 'anthropic_api_key']);
+export const SECRET_KEYS = new Set(['google_client_secret', 'twilio_auth_token', 'anthropic_api_key', 'oidc_client_secret', 'slack_signing_secret', 'slack_bot_token', 'vapid_private']);
+// settings that the UI form must never overwrite (managed internally)
+export const INTERNAL_KEYS = new Set(['vapid_public', 'vapid_private']);
 
 export function getSetting(key) {
   const env = process.env[key.toUpperCase()];

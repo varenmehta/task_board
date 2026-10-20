@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { Router } from './router.js';
-import { all, get, run, insert, tx, parseJSON, getSetting, setSetting, SETTING_KEYS, SECRET_KEYS } from './db.js';
+import { all, get, run, insert, tx, parseJSON, getSetting, setSetting, SETTING_KEYS, SECRET_KEYS, INTERNAL_KEYS } from './db.js';
 import { ORG_ROLES, PROJECT_ROLES, DEFAULT_STATUSES, TASK_TYPES } from './config.js';
 import { bad, forbidden, notFound, handleOf, pickColor, todayStr, addDays, HttpError, clip } from './util.js';
 import { hashPassword, verifyPassword, sessionCookie, clearCookie, rateLimit, sign, verify } from './auth.js';
@@ -11,6 +11,14 @@ import * as ATT from './attachments.js';
 import * as REC from './recurring.js';
 import * as PLAN from './planning.js';
 import { report, exportCsv } from './reports.js';
+import * as TOK from './tokens.js';
+import * as WH from './webhooks.js';
+import * as HOOKS from './hooks.js';
+import * as ICS from './ics.js';
+import * as SSO from './sso.js';
+import * as SLACK from './slack.js';
+import * as PUSH from './channels/webpush.js';
+import { audit, listAudit } from './audit.js';
 import * as T from './tasks.js';
 import { addClient, pushTo } from './events.js';
 import { usersWhoCanView } from './access.js';
@@ -38,7 +46,7 @@ const hasUsers = () => !!get('SELECT 1 FROM users LIMIT 1');
 function me(u) {
   const phoneSet = !!u.phone;
   return {
-    ...publicUser(u), phone: u.phone, phone_verified: !!u.phone_verified, prefs: getPrefs(u),
+    ...publicUser(u), slack_id: u.slack_id, phone: u.phone, phone_verified: !!u.phone_verified, prefs: getPrefs(u),
     unread: unreadCount(u.id), phoneSet,
     teams: all('SELECT t.id, t.name, tm.role FROM teams t JOIN team_members tm ON tm.team_id=t.id WHERE tm.user_id=? ORDER BY t.name', u.id),
   };
@@ -65,6 +73,7 @@ R.get('/api/bootstrap', ({ user }) => ({
   me: user ? me(user) : null,
   statuses: DEFAULT_STATUSES, task_types: TASK_TYPES,
   ai_mode: AI.aiMode(),
+  sso: (() => { const c = SSO.ssoConfig(''); return c ? { label: c.label } : null; })(),
   demo: !!get("SELECT 1 FROM users WHERE email LIKE '%@demo.taskboard.dev' AND active=1"),
 }), { public: true });
 
@@ -91,8 +100,9 @@ R.post('/api/login', ({ body, req, res }) => {
   const email = String(body.email || '').trim().toLowerCase();
   if (!rateLimit('login:' + (req.socket.remoteAddress || '') + email, 8)) throw new HttpError(429, 'Too many attempts — try again in a minute');
   const u = get('SELECT * FROM users WHERE email=? AND active=1', email);
-  if (!u || !verifyPassword(String(body.password || ''), u.password_hash)) throw new HttpError(401, 'Incorrect email or password');
+  if (!u || !verifyPassword(String(body.password || ''), u.password_hash)) { audit(u || null, 'auth.login_failed', email, {}, req); throw new HttpError(401, 'Incorrect email or password'); }
   res.setHeader('Set-Cookie', sessionCookie(u.id, req.headers['x-forwarded-proto'] === 'https'));
+  audit(u, 'auth.login', u.email, {}, req);
   return me(u);
 }, { public: true });
 
@@ -128,6 +138,7 @@ R.patch('/api/me', ({ user, body }) => {
   if (!name) throw bad('Name cannot be empty');
   const title = body.title != null ? String(body.title).slice(0, 80) : user.title;
   run('UPDATE users SET name=?, title=? WHERE id=?', name.slice(0, 80), title, user.id);
+  if ('slack_id' in body) SLACK.linkSlack(user.id, String(body.slack_id || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20) || null);
   if (body.password) {
     if (String(body.password).length < 8) throw bad('Password must be at least 8 characters');
     if (!verifyPassword(String(body.current_password || ''), user.password_hash)) throw bad('Current password is incorrect');
@@ -203,12 +214,13 @@ R.get('/api/integrations/google/callback', async ({ user, query, req, res }) => 
     const t = await G.exchangeCode(query.code, baseUrl(req));
     if (!t.refresh_token) return done('error=' + encodeURIComponent('Google did not return offline access — remove the app in your Google account and retry'));
     G.saveIntegration(user.id, t);
+    audit(user, 'integration.gmail_connected', t.email, {}, req);
     await G.ensureLabel(user.id).catch(() => {});
     return done('connected=gmail');
   } catch (e) { return done('error=' + encodeURIComponent(e.message)); }
 }, { stream: true });
 
-R.del('/api/integrations/google', async ({ user }) => { await G.revoke(user.id); return { ok: true }; });
+R.del('/api/integrations/google', async ({ user, req }) => { await G.revoke(user.id); audit(user, 'integration.gmail_disconnected', user.email, {}, req); return { ok: true }; });
 
 R.post('/api/integrations/test', async ({ user, body }) => {
   const channel = body.channel;
@@ -241,7 +253,7 @@ R.post('/api/webhooks/twilio', async ({ req, body }) => {
   const user = from && get('SELECT * FROM users WHERE phone=? AND phone_verified=1 AND active=1', from);
   const reply = user ? await handleCommand(user, body.Body) : 'This number is not linked to a TaskBoard account. Add it in Settings → Integrations.';
   return { __xml: `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${reply.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</Message></Response>` };
-}, { public: true });
+}, { public: true, webhook: true });
 
 // ============ admin settings ============
 R.get('/api/settings', ({ user }) => {
@@ -254,14 +266,16 @@ R.get('/api/settings', ({ user }) => {
   return { values: out, redirect_uri: G.redirectUri('') };
 });
 
-R.put('/api/settings', ({ user, body }) => {
+R.put('/api/settings', ({ user, body, req }) => {
   needAdmin(user);
+  const changed = [];
   for (const k of SETTING_KEYS) {
-    if (!(k in body)) continue;
+    if (!(k in body) || INTERNAL_KEYS.has(k)) continue;
     const v = String(body[k] ?? '').trim();
     if (SECRET_KEYS.has(k) && v === '') continue; // blank = keep existing
-    setSetting(k, v === '__clear__' ? '' : v);
+    setSetting(k, v === '__clear__' ? '' : v); changed.push(k);
   }
+  audit(user, 'settings.updated', null, { keys: changed }, req);
   return { ok: true };
 });
 
@@ -291,13 +305,14 @@ R.post('/api/users', async ({ user, body, req }) => {
   const id = insert('INSERT INTO users(email,name,role,color,title,invite_token) VALUES(?,?,?,?,?,?)', email, name, body.role || 'member', pickColor(get('SELECT COUNT(*) n FROM users').n + 2), String(body.title || ''), token);
   for (const tid of body.team_ids || []) if (get('SELECT 1 FROM teams WHERE id=?', tid)) run('INSERT OR IGNORE INTO team_members(team_id,user_id,role) VALUES(?,?,?)', tid, id, 'member');
   for (const pid of body.project_ids || []) if (get('SELECT 1 FROM projects WHERE id=?', pid)) run('INSERT OR IGNORE INTO project_members(project_id,user_id,role) VALUES(?,?,?)', pid, id, body.role === 'guest' ? 'commenter' : 'editor');
+  audit(user, 'user.invited', email, { role: body.role || 'member' }, req);
   const link = `${baseUrl(req)}/#/invite/${token}`;
   const status = await sendEmail({ userId: user.id, to: email, subject: `${user.name} invited you to ${getSetting('workspace_name') || 'TaskBoard'}`,
     text: `Join your team on TaskBoard: ${link}`, html: emailHtml({ heading: `You're invited to ${getSetting('workspace_name') || 'TaskBoard'}`, body: `${user.name} added you as <b>${body.role || 'member'}</b>. Set a password to get started.`, ctaText: 'Accept invitation', ctaUrl: link }) });
   return { id, invite_link: link, email_status: status };
 });
 
-R.patch('/api/users/:id', ({ user, params, body }) => {
+R.patch('/api/users/:id', ({ user, params, body, req }) => {
   needAdmin(user);
   const u = get('SELECT * FROM users WHERE id=? AND active=1', params.id);
   if (!u) throw notFound('User not found');
@@ -305,17 +320,19 @@ R.patch('/api/users/:id', ({ user, params, body }) => {
     if (!ORG_ROLES.includes(body.role)) throw bad('Invalid role');
     if (u.role === 'admin' && body.role !== 'admin' && get('SELECT COUNT(*) n FROM users WHERE role=? AND active=1', 'admin').n <= 1) throw bad('There must be at least one admin');
     run('UPDATE users SET role=? WHERE id=?', body.role, u.id);
+    audit(user, 'user.role_changed', u.email, { from: u.role, to: body.role }, req);
   }
   if (body.title != null) run('UPDATE users SET title=? WHERE id=?', String(body.title).slice(0, 80), u.id);
   return publicUser(get('SELECT * FROM users WHERE id=?', u.id));
 });
 
-R.del('/api/users/:id', ({ user, params }) => {
+R.del('/api/users/:id', ({ user, params, req }) => {
   needAdmin(user);
   const u = get('SELECT * FROM users WHERE id=? AND active=1', params.id);
   if (!u) throw notFound('User not found');
   if (u.id === user.id) throw bad('You cannot remove yourself');
   run('UPDATE users SET active=0, invite_token=NULL WHERE id=?', u.id);
+  audit(user, 'user.removed', u.email, {}, req);
   run('UPDATE tasks SET assignee_id=NULL WHERE assignee_id=?', u.id);
   run('DELETE FROM team_members WHERE user_id=?', u.id);
   return { ok: true };
@@ -350,8 +367,9 @@ R.patch('/api/teams/:id', ({ user, params, body }) => {
   return get('SELECT * FROM teams WHERE id=?', t.id);
 });
 
-R.del('/api/teams/:id', ({ user, params }) => {
+R.del('/api/teams/:id', ({ user, params, req }) => {
   needAdmin(user);
+  audit(user, 'team.deleted', String(params.id), {}, req);
   run('DELETE FROM teams WHERE id=?', params.id);
   return { ok: true };
 });
@@ -580,6 +598,63 @@ R.get('/api/reports/export', ({ user, query }) => {
   const csv = exportCsv(user, query);
   return { __raw: { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="taskboard-${query.type === 'time' ? 'time' : 'tasks'}.csv"`, 'Cache-Control': 'no-store' }, body: '﻿' + csv } };
 });
+
+
+// ============ API tokens, webhooks, integrations, calendar, SSO, push, audit ============
+R.get('/api/tokens', ({ user }) => TOK.listTokens(user.id));
+R.post('/api/tokens', ({ user, body, req, via }) => { if (via === 'token') throw forbidden('Create tokens from the web app'); return TOK.createToken(user, body, req); });
+R.del('/api/tokens/:id', ({ user, params, req }) => { TOK.revokeToken(user, Number(params.id), req); return { ok: true }; });
+
+R.get('/api/webhook-meta', () => ({ events: WH.EVENTS, formats: WH.FORMATS, hook_kinds: HOOKS.KINDS }));
+R.get('/api/projects/:id/webhooks', ({ user, params }) => WH.listWebhooks(user, Number(params.id)));
+R.post('/api/projects/:id/webhooks', ({ user, params, body, req }) => WH.saveWebhook(user, { ...body, project_id: Number(params.id) }, req));
+R.get('/api/admin/webhooks', ({ user }) => WH.listWebhooks(user, null));
+R.post('/api/admin/webhooks', ({ user, body, req }) => WH.saveWebhook(user, { ...body, project_id: null }, req));
+R.del('/api/webhooks/:id', ({ user, params }) => { WH.deleteWebhook(user, Number(params.id)); return { ok: true }; });
+R.post('/api/webhooks/:id/test', async ({ user, params }) => WH.sendTest(user, Number(params.id)));
+R.get('/api/webhooks/:id/deliveries', ({ user, params }) => WH.deliveries(user, Number(params.id)));
+
+R.get('/api/projects/:id/hooks', ({ user, params }) => HOOKS.listHooks(user, Number(params.id)));
+R.post('/api/projects/:id/hooks', ({ user, params, body, req }) => { const r = HOOKS.createHook(user, Number(params.id), body, req); return { ...r, url: baseUrl(req) + r.path }; });
+R.del('/api/hooks/:id', ({ user, params }) => { HOOKS.deleteHook(user, Number(params.id)); return { ok: true }; });
+R.post('/api/hooks/in/:token', ({ req, params, body, rawText }) => HOOKS.handleIncoming(params.token, req.headers, rawText, body), { public: true, webhook: true });
+
+R.post('/api/hooks/slack', async ({ req, body, rawText }) => { SLACK.verifySlack(req.headers, rawText); return SLACK.handleSlash(body); }, { public: true, webhook: true });
+
+R.get('/api/me/calendar', ({ user, req }) => ({ url: `${baseUrl(req)}/api/calendar/${ICS.ensureToken(user.id)}.ics` }));
+R.post('/api/me/calendar/rotate', ({ user, req }) => ({ url: `${baseUrl(req)}/api/calendar/${ICS.rotateToken(user.id)}.ics` }));
+R.get('/api/calendar/:token', ({ params, req, res }) => {
+  const ics = ICS.buildCalendar(params.token.replace(/\.ics$/, ''), req.headers.host);
+  if (!ics) throw notFound('Calendar not found');
+  return { __raw: { headers: { 'Content-Type': 'text/calendar; charset=utf-8', 'Cache-Control': 'private, max-age=300', 'Content-Disposition': 'inline; filename="taskboard.ics"' }, body: ics } };
+}, { public: true });
+
+R.get('/api/auth/sso/start', async ({ req, res }) => {
+  const cfg = SSO.ssoConfig(baseUrl(req));
+  if (!cfg) throw notFound('Single sign-on is not configured');
+  const { url } = await SSO.startUrl(cfg);
+  res.writeHead(302, { Location: url }); res.end();
+  return undefined;
+}, { public: true, stream: true });
+R.get('/api/auth/sso/callback', async ({ req, res, query }) => {
+  const back = msg => { res.writeHead(302, { Location: `/#/login?sso_error=${encodeURIComponent(msg)}` }); res.end(); };
+  try {
+    const cfg = SSO.ssoConfig(baseUrl(req));
+    if (!cfg || query.error || !query.code) return back(query.error_description || query.error || 'Sign-in was cancelled');
+    const ident = await SSO.finish(cfg, query.code, query.state);
+    const u = SSO.userForSso(ident);
+    audit(u, 'auth.sso_login', u.email, {}, req);
+    res.writeHead(302, { Location: '/', 'Set-Cookie': sessionCookie(u.id, req.headers['x-forwarded-proto'] === 'https') }); res.end();
+  } catch (e) { back(e.message); }
+  return undefined;
+}, { public: true, stream: true });
+
+R.get('/api/push/key', () => ({ key: PUSH.vapidKeys().pub }));
+R.post('/api/push/subscribe', ({ user, body }) => { PUSH.subscribe(user.id, body); return { ok: true }; });
+R.post('/api/push/unsubscribe', ({ user, body }) => { PUSH.unsubscribe(user.id, body.endpoint); return { ok: true }; });
+R.post('/api/push/test', async ({ user }) => ({ sent: await PUSH.pushTo(user.id, { title: 'TaskBoard', body: 'Push notifications are working 🎉', url: '/#/inbox' }) }));
+
+R.get('/api/audit', ({ user, query }) => { needAdmin(user); return listAudit(query); });
 
 // ============ notifications ============
 R.get('/api/notifications', ({ user }) => ({

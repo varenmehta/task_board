@@ -69,6 +69,41 @@ export function projectSettingsView(ctl, repaint) {
   };
   loadAccess().catch(() => {});
 
+  // ---- integrations: outgoing webhooks + inbound hooks ----
+  const whBox = h('div'), hookBox = h('div');
+  const showSecret = (title, rows) => modal({ title, width: 620, body: [h('p', { class: 'muted small' }, 'Copy these now — for security they are shown only once.'), ...rows.map(([l, v]) => h('div', { class: 'field' }, h('label', l), h('input', { class: 'input mono', readonly: true, value: v, onfocus: e => e.target.select() })))], actions: [{ label: 'Done', kind: 'primary' }] });
+  const loadWh = async () => {
+    const [meta, list] = await Promise.all([api.get('/webhook-meta'), api.get(`/projects/${p.id}/webhooks`)]);
+    mount(whBox, list.length ? list.map(w => h('div', { class: 'field-row' }, icon(w.format === 'json' ? 'link' : 'message', 16), h('div', { class: 'grow', style: { minWidth: 0 } }, h('div', { style: { fontWeight: 550 } }, w.name || w.url), h('div', { class: 'small faint ellipsis' }, `${meta.formats[w.format]} · ${w.events.length} events · ${w.url}`)),
+      w.active ? h('span', { class: 'chip ' + (w.last_status === 'failed' ? 'red' : w.last_status === 'ok' ? 'green' : '') }, w.last_status || 'idle') : h('span', { class: 'chip amber' }, 'disabled'),
+      h('button', { class: 'btn sm', onclick: async e => { e.currentTarget.disabled = true; const r = await api.post(`/webhooks/${w.id}/test`).catch(er => ({ status: 'failed', error: er.message })); toast(r.status === 'ok' ? 'Test delivered ✓' : `Failed: ${r.error || r.code}`, r.status === 'ok' ? 'success' : 'error', 4500); loadWh(); } }, 'Test'),
+      h('button', { class: 'icon-btn', 'aria-label': 'Delete webhook', onclick: async () => { await api.del('/webhooks/' + w.id); loadWh(); } }, icon('trash', 16)))) : h('p', { class: 'faint small' }, 'No webhooks yet.'));
+    whBox.meta = meta;
+  };
+  const addWebhook = () => {
+    const meta = whBox.meta; if (!meta) return;
+    const v = { name: '', url: '', format: 'slack', events: ['task.created', 'task.completed'] };
+    const fmt = h('select', { class: 'select', onchange: e => (v.format = e.target.value) }, Object.entries(meta.formats).map(([k, l]) => h('option', { value: k, selected: k === v.format }, l)));
+    modal({ title: 'New webhook', width: 560, body: [
+      h('div', { class: 'field' }, h('label', 'Send to'), fmt, h('div', { class: 'hint' }, 'Slack: create an Incoming Webhook in your Slack app. Teams: add a Workflows/Incoming Webhook to a channel. JSON: any HTTPS endpoint — requests are signed with HMAC-SHA256.')),
+      h('div', { class: 'field' }, h('label', 'URL'), h('input', { class: 'input', placeholder: 'https://hooks.slack.com/services/…', oninput: e => (v.url = e.target.value) })),
+      h('div', { class: 'field' }, h('label', 'Name (optional)'), h('input', { class: 'input', oninput: e => (v.name = e.target.value) })),
+      h('div', { class: 'field' }, h('label', 'Events'), h('div', { class: 'col', style: { gap: '6px' } }, Object.entries(meta.events).map(([k, l]) => h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: v.events.includes(k), onchange: e => { e.target.checked ? v.events.push(k) : v.events.splice(v.events.indexOf(k), 1); } }), l))))],
+    actions: [{ label: 'Cancel' }, { label: 'Create', kind: 'primary', onClick: async () => { try { const r = await api.post(`/projects/${p.id}/webhooks`, v); if (v.format === 'json') showSecret('Webhook created', [['Signing secret (HMAC-SHA256, header X-TaskBoard-Signature)', r.secret]]); else toast('Webhook created', 'success'); loadWh(); } catch (e) { toast(e.message, 'error'); return false; } } }] });
+  };
+  const loadHooks = async () => {
+    const list = await api.get(`/projects/${p.id}/hooks`);
+    mount(hookBox, list.length ? list.map(x => h('div', { class: 'field-row' }, icon(x.kind === 'github' || x.kind === 'gitlab' ? 'github' : 'alert', 16), h('b', { class: 'grow' }, x.name), h('span', { class: 'small faint' }, x.last_used ? 'last used ' + x.last_used.slice(0, 10) : 'never used'), h('button', { class: 'icon-btn', 'aria-label': 'Delete', onclick: async () => { await api.del('/hooks/' + x.id); loadHooks(); } }, icon('trash', 16)))) : h('p', { class: 'faint small' }, 'No inbound integrations yet.'));
+  };
+  const addHook = async () => {
+    const meta = whBox.meta || await api.get('/webhook-meta');
+    const v = { kind: 'github', name: '' };
+    const kind = h('select', { class: 'select', onchange: e => (v.kind = e.target.value) }, Object.entries(meta.hook_kinds).map(([k, l]) => h('option', { value: k, selected: k === v.kind }, l)));
+    modal({ title: 'Add inbound integration', body: [h('div', { class: 'field' }, h('label', 'Source'), kind, h('div', { class: 'hint' }, 'GitHub/GitLab: link pull requests to tasks (mention the task key like API-12 in the PR title or branch) — opening a PR moves the task to review, merging completes it. Sentry/PagerDuty/Datadog/generic: alerts create tasks, de-duplicate repeats, and auto-resolve.')), h('div', { class: 'field' }, h('label', 'Name (optional)'), h('input', { class: 'input', oninput: e => (v.name = e.target.value) }))],
+      actions: [{ label: 'Cancel' }, { label: 'Create', kind: 'primary', onClick: async () => { try { const r = await api.post(`/projects/${p.id}/hooks`, v); showSecret('Integration created', [['Webhook URL', r.url], ...(r.secret ? [[v.kind === 'gitlab' ? 'Secret token' : 'Secret (GitHub “Secret” field)', r.secret]] : [])]); loadHooks(); } catch (e) { toast(e.message, 'error'); return false; } } }] });
+  };
+  loadWh().catch(() => {}); loadHooks().catch(() => {});
+
   const v = { name: p.name, description: p.description || '', digest: (p.digest_emails || []).join(', '), triage: !!p.auto_triage };
   mount(box,
     section('General', 'Name, description and automation preferences.',
@@ -83,7 +118,9 @@ export function projectSettingsView(ctl, repaint) {
       fieldsBox, h('div', { class: 'row', style: { marginTop: '8px' } }, h('button', { class: 'btn', onclick: () => { fields.push({ label: '', type: 'text' }); paintFields(); } }, icon('plus', 14), 'Add field'), h('button', { class: 'btn primary', onclick: () => save({ fields: fields.filter(f => f.label.trim()) }, 'Fields saved') }, 'Save fields'))),
     section('Task templates', 'Reusable starting points (with subtasks). Pick one from “New task”.', tplBox, h('button', { class: 'btn', style: { marginTop: '8px' }, onclick: () => templateModal(ctl, null, repaint) }, icon('plus', 14), 'New template')),
     section('Recurring tasks', 'Tasks created automatically on a schedule — release checklists, weekly reviews, on-call handovers.', recBox, h('button', { class: 'btn', style: { marginTop: '8px' }, onclick: () => recurringModal(ctl, repaint) }, icon('plus', 14), 'New recurring task')),
-    section('Access', 'Per-project roles: manager, editor, commenter, viewer.', accessBox));
+    section('Access', 'Per-project roles: manager, editor, commenter, viewer.', accessBox),
+    section('Notify Slack, Teams & other tools', 'Outgoing webhooks fire when tasks change. Slack and Teams get ready-made messages; JSON webhooks are HMAC-signed.', whBox, h('button', { class: 'btn', style: { marginTop: '8px' }, onclick: addWebhook }, icon('plus', 14), 'Add webhook')),
+    section('Inbound integrations', 'GitHub / GitLab pull requests and Sentry / PagerDuty / Datadog alerts become task updates.', hookBox, h('button', { class: 'btn', style: { marginTop: '8px' }, onclick: addHook }, icon('plus', 14), 'Add integration')));
   return h('div', { class: 'page' }, box);
 }
 

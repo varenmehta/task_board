@@ -3,6 +3,7 @@ import { bus, pushTo, flags } from './events.js';
 import { sendEmail, sendPhone, emailHtml } from './delivery.js';
 import { handleOf, esc, clip } from './util.js';
 import { teamLeads } from './access.js';
+import { pushTo as webPush, hasSubscription } from './channels/webpush.js';
 
 // Which events notify through which channel (users can change this in Settings).
 export const EVENTS = {
@@ -64,10 +65,11 @@ export function notify(userId, event, opts) {
       userId, event, opts.title, opts.body || '', task?.id ?? null, task?.project_id ?? null);
     pushTo([userId], 'notification', { id, type: event, title: opts.title, body: opts.body || '', task_id: task?.id ?? null });
   }
+  if (m.app && hasSubscription(userId)) webPush(userId, { title: opts.title, body: clip(opts.body || '', 140), url: link, tag: `tb-${event}-${task?.id ?? 'x'}`, urgent: !task || ['urgent', 'high'].includes(task.priority) || event === 'mention' }).catch(() => {});
   if (m.email && user.email) {
     const text = `${opts.title}\n\n${opts.body || ''}\n\n${appUrl(link)}`;
     sendEmail({
-      userId, to: user.email, subject: opts.title, text,
+      userId, to: user.email, subject: task ? `[${task.key}] ${opts.title}` : opts.title, text,
       html: emailHtml({ heading: opts.title, body: esc(opts.body || '').replace(/\n/g, '<br>'), ctaText: opts.cta || 'Open task', ctaUrl: appUrl(link) }),
     });
   }

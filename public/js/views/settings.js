@@ -2,14 +2,14 @@ import { h, mount, icon, toast, ago, modal } from '../dom.js';
 import { api } from '../api.js';
 import { state } from '../state.js';
 
-const TABS = [['profile', 'Profile', 'user'], ['notifications', 'Notifications', 'bell'], ['integrations', 'Email, phone & AI', 'link'], ['workspace', 'Workspace (admin)', 'shield']];
+const TABS = [['profile', 'Profile', 'user'], ['notifications', 'Notifications', 'bell'], ['integrations', 'Email, phone & AI', 'link'], ['developer', 'API & calendar', 'key'], ['workspace', 'Workspace (admin)', 'shield'], ['audit', 'Audit log (admin)', 'history']];
 
 export async function settingsView(el, tab) {
-  if (tab === 'workspace' && state.me.role !== 'admin') tab = 'profile';
+  if (['workspace', 'audit'].includes(tab) && state.me.role !== 'admin') tab = 'profile';
   const content = h('div', { class: 'grow', style: { maxWidth: '760px' } });
   mount(el, h('div', { class: 'page' }, h('div', { class: 'page-head' }, h('div', { class: 'grow' }, h('h1', 'Settings'))),
-    h('div', { class: 'settings' }, h('nav', { class: 'settings-nav' }, TABS.filter(t => t[0] !== 'workspace' || state.me.role === 'admin').map(([k, l, ico]) => h('a', { class: 'nav-item' + (k === tab ? ' active' : ''), href: '#/settings/' + k }, icon(ico, 17), l))), content)));
-  const fn = { profile, notifications, integrations, workspace }[tab] || profile;
+    h('div', { class: 'settings' }, h('nav', { class: 'settings-nav' }, TABS.filter(t => !['workspace', 'audit'].includes(t[0]) || state.me.role === 'admin').map(([k, l, ico]) => h('a', { class: 'nav-item' + (k === tab ? ' active' : ''), href: '#/settings/' + k }, icon(ico, 17), l))), content)));
+  const fn = { profile, notifications, integrations, developer, workspace, audit }[tab] || profile;
   await fn(content);
 }
 
@@ -20,11 +20,12 @@ const sw = (checked, onchange, label) => h('label', { class: 'switch', 'aria-lab
 // ---------- profile ----------
 async function profile(box) {
   const me = await api.get('/me');
-  const v = { name: me.name, title: me.title || '' };
+  const v = { name: me.name, title: me.title || '', slack_id: me.slack_id || '' };
   const pw = { current_password: '', password: '' };
   mount(box,
     h('div', { class: 'card setting-card' }, h('h3', 'Your profile'), h('p', { class: 'muted small', style: { marginBottom: '14px' } }, `${me.email} · ${me.role}`),
       h('div', { class: 'col', style: { gap: '12px' } }, field('Name', h('input', { class: 'input', value: v.name, oninput: e => (v.name = e.target.value) })), field('Job title', h('input', { class: 'input', value: v.title, placeholder: 'e.g. Senior Backend Engineer', oninput: e => (v.title = e.target.value) })),
+        field('Slack member ID (optional)', h('input', { class: 'input', value: v.slack_id, placeholder: 'U01ABCDEF', oninput: e => (v.slack_id = e.target.value) }), 'Lets you run /taskboard in Slack. Find it in Slack: profile → ⋯ → Copy member ID.'),
         h('div', h('button', { class: 'btn primary', onclick: async () => { try { Object.assign(state.me, await api.patch('/me', v)); toast('Profile saved', 'success'); } catch (e) { toast(e.message, 'error'); } } }, 'Save profile')))),
     h('div', { class: 'card setting-card' }, h('h3', 'Change password'), h('div', { class: 'col', style: { gap: '12px', marginTop: '12px' } },
       field('Current password', h('input', { class: 'input', type: 'password', autocomplete: 'current-password', oninput: e => (pw.current_password = e.target.value) })), field('New password', h('input', { class: 'input', type: 'password', autocomplete: 'new-password', oninput: e => (pw.password = e.target.value) }), 'At least 8 characters'),
@@ -49,8 +50,58 @@ async function notifications(box) {
       h('div', { class: 'setting-row' }, h('div', { class: 'grow' }, h('b', 'Daily briefing time'), h('div', { class: 'small muted' }, 'Your overdue, due-today and in-progress work, with an AI-written heads-up.')), h('select', { class: 'select', style: { width: '120px' }, onchange: e => save({ digest_hour: +e.target.value, tz_offset: new Date().getTimezoneOffset() }) }, hours)),
       h('div', { class: 'setting-row' }, h('div', { class: 'grow' }, h('b', 'Weekdays only')), sw(prefs.digest_weekdays_only, x => save({ digest_weekdays_only: x, tz_offset: new Date().getTimezoneOffset() }), 'Weekdays only')),
       h('div', { class: 'row', style: { marginTop: '6px' } }, h('button', { class: 'btn sm', onclick: async () => { const r = await api.post('/integrations/test', { channel: 'briefing' }).catch(e => ({ status: e.message })); toast(r.status === 'sent' ? 'Briefing emailed — check your inbox' : r.status === 'simulated' ? 'Briefing generated (logged in delivery log — connect Gmail to send)' : r.status); } }, icon('mail', 14), 'Send me a preview briefing'))),
-    h('div', { class: 'card setting-card' }, h('h3', 'Browser alerts'), h('div', { class: 'setting-row' }, h('div', { class: 'grow' }, h('b', 'Desktop / mobile notifications while TaskBoard is open'), h('div', { class: 'small muted' }, 'Install TaskBoard to your home screen (browser menu → “Add to Home Screen”) for an app-like experience on your phone.')),
-      'Notification' in window ? h('button', { class: 'btn sm', disabled: Notification.permission === 'granted', onclick: async () => { const p = await Notification.requestPermission(); toast(p === 'granted' ? 'Browser alerts on' : 'Permission not granted'); notifications(box); } }, Notification.permission === 'granted' ? 'Enabled' : 'Enable') : h('span', { class: 'faint small' }, 'Not supported'))));
+    pushCard());
+}
+
+function urlB64ToUint8(s) { const pad = '='.repeat((4 - s.length % 4) % 4); const raw = atob((s + pad).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from([...raw].map(c => c.charCodeAt(0))); }
+function pushCard() {
+  const card = h('div', { class: 'card setting-card' });
+  const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const paint = async () => {
+    const sub = supported ? await (await navigator.serviceWorker.ready).pushManager.getSubscription().catch(() => null) : null;
+    mount(card, h('h3', 'Push notifications on this device'), h('div', { class: 'setting-row' }, h('div', { class: 'grow' }, h('b', 'Get alerts even when TaskBoard is closed'), h('div', { class: 'small muted' }, supported ? 'Works on desktop browsers and on phones once TaskBoard is installed to your home screen (Share/⋮ → Add to Home Screen).' : 'This browser does not support push notifications.')),
+      !supported ? null : sub ? h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: async () => { const r = await api.post('/push/test').catch(e => ({ sent: 0, e })); toast(r.sent ? 'Sent — check your notifications' : 'Nothing delivered'); } }, 'Send test'), h('button', { class: 'btn sm danger', onclick: async () => { await api.post('/push/unsubscribe', { endpoint: sub.endpoint }); await sub.unsubscribe(); paint(); } }, 'Turn off'))
+        : h('button', { class: 'btn primary sm', onclick: async () => {
+          try {
+            if (await Notification.requestPermission() !== 'granted') return toast('Notifications were blocked in your browser settings', 'error');
+            const reg = await navigator.serviceWorker.ready;
+            const { key } = await api.get('/push/key');
+            const s2 = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(key) });
+            await api.post('/push/subscribe', s2.toJSON()); toast('Push enabled on this device', 'success'); paint();
+          } catch (e) { toast(e.message, 'error'); }
+        } }, 'Enable')));
+  };
+  paint();
+  return card;
+}
+
+// ---------- developer: API tokens, calendar feed ----------
+async function developer(box) {
+  const [tokens, cal] = await Promise.all([api.get('/tokens'), api.get('/me/calendar')]);
+  const copy = v => navigator.clipboard?.writeText(v).then(() => toast('Copied'), () => toast(v));
+  const newToken = () => {
+    const v = { name: '', scope: 'write', days: '' };
+    modal({ title: 'New API token', body: [field('Name', h('input', { class: 'input', placeholder: 'e.g. CI pipeline', oninput: e => (v.name = e.target.value) })),
+      field('Access', h('select', { class: 'select', onchange: e => (v.scope = e.target.value) }, [['write', 'Read & write (acts as you)'], ['read', 'Read-only']].map(([k, l]) => h('option', { value: k }, l)))),
+      field('Expires', h('select', { class: 'select', onchange: e => (v.days = e.target.value) }, [['', 'Never'], ['30', 'In 30 days'], ['90', 'In 90 days'], ['365', 'In a year']].map(([k, l]) => h('option', { value: k }, l))))],
+    actions: [{ label: 'Cancel' }, { label: 'Create token', kind: 'primary', onClick: async () => { try { const r = await api.post('/tokens', { ...v, days: v.days ? +v.days : undefined }); modal({ title: 'Your new token', width: 560, body: [h('p', { class: 'muted small' }, 'Copy it now — it will not be shown again.'), h('input', { class: 'input mono', readonly: true, value: r.token, onfocus: e => e.target.select() })], actions: [{ label: 'Copy', kind: 'primary', onClick: () => { copy(r.token); return false; }, keepOpen: true }, { label: 'Done' }] }); developer(box); } catch (e) { toast(e.message, 'error'); return false; } } }] });
+  };
+  mount(box,
+    h('div', { class: 'card setting-card' }, h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'API tokens'), h('button', { class: 'btn primary sm', onclick: newToken }, icon('plus', 14), 'New token')),
+      h('p', { class: 'muted small', style: { margin: '4px 0 10px' } }, 'Use the REST API from scripts and CI: ', h('code', 'curl -H "Authorization: Bearer tb_…" ' + location.origin + '/api/projects'), '. Tokens carry your permissions and are rate-limited to 600 requests/minute.'),
+      tokens.length ? tokens.map(t => h('div', { class: 'setting-row' }, icon('key', 16), h('div', { class: 'grow' }, h('b', t.name), h('div', { class: 'small faint' }, `${t.prefix}… · ${t.scope} · ${t.last_used ? 'used ' + t.last_used.slice(0, 10) : 'never used'}${t.expires_at ? ' · expires ' + t.expires_at.slice(0, 10) : ''}`)), h('button', { class: 'btn sm danger', onclick: async () => { await api.del('/tokens/' + t.id); developer(box); } }, 'Revoke'))) : h('p', { class: 'faint small' }, 'No tokens yet.'),
+      h('details', { style: { marginTop: '10px' } }, h('summary', { class: 'small muted', style: { cursor: 'pointer' } }, 'Common endpoints'), h('pre', { class: 'mono small', style: { background: 'var(--surface-2)', padding: '10px', borderRadius: '8px', overflow: 'auto' } }, ['GET    /api/projects', 'GET    /api/projects/:id/board', 'POST   /api/projects/:id/tasks      {title, priority, assignee_id, due_date, labels…}', 'PATCH  /api/tasks/:id               {status, priority, …}', 'POST   /api/tasks/:id/comments      {body}', 'GET    /api/my-tasks', 'GET    /api/search?q=…', 'POST   /api/tasks/bulk              {ids, patch}', 'GET    /api/reports?from=&to='].join('\n')))),
+    h('div', { class: 'card setting-card' }, h('h3', 'Calendar feed'), h('p', { class: 'muted small', style: { margin: '4px 0 10px' } }, 'Subscribe in Google Calendar, Apple Calendar or Outlook to see your task due dates, sprint boundaries and releases next to your meetings. Treat the link like a password.'),
+      h('div', { class: 'row' }, h('input', { class: 'input mono', readonly: true, value: cal.url, onfocus: e => e.target.select() }), h('button', { class: 'btn', onclick: () => copy(cal.url) }, icon('copy', 14), 'Copy'), h('button', { class: 'btn', onclick: async () => { if (confirm('Generate a new link? The old one stops working.')) { await api.post('/me/calendar/rotate'); developer(box); } } }, 'Reset')),
+      h('p', { class: 'hint', style: { marginTop: '8px' } }, 'Google Calendar: Other calendars → + → From URL. It refreshes roughly every few hours.')));
+}
+
+// ---------- audit log ----------
+async function audit(box) {
+  const rows = await api.get('/audit?limit=200');
+  mount(box, h('div', { class: 'card setting-card' }, h('h3', 'Audit log'), h('p', { class: 'muted small', style: { margin: '2px 0 10px' } }, 'Security-relevant events: sign-ins, role changes, integrations, tokens, settings.'),
+    rows.length ? h('div', { class: 'table-wrap', style: { padding: 0 } }, h('table', { class: 't' }, h('thead', h('tr', h('th', 'When'), h('th', 'Who'), h('th', 'Action'), h('th', 'Target'), h('th', { class: 'hide-sm' }, 'IP'))),
+      h('tbody', rows.map(r => h('tr', h('td', { class: 'small nowrap' }, ago(r.created_at)), h('td', r.user_name || '—'), h('td', h('span', { class: 'chip ' + (r.action.includes('failed') ? 'red' : r.action.startsWith('settings') || r.action.includes('role') ? 'amber' : '') }, r.action)), h('td', { class: 'small ellipsis', style: { maxWidth: '240px' } }, r.target || ''), h('td', { class: 'small faint hide-sm' }, r.ip || '')))))) : h('p', { class: 'faint' }, 'Nothing recorded yet.')));
 }
 
 // ---------- integrations ----------
@@ -114,6 +165,13 @@ async function workspace(box) {
       text('google_client_id', 'Client ID', '123456-abc.apps.googleusercontent.com'), secret('google_client_secret', 'Client secret', 'GOCSPX-…')),
     section('Twilio (SMS & WhatsApp)', 'From console.twilio.com. Set the incoming-message webhook of your number to the URL shown on the Integrations tab.',
       text('twilio_account_sid', 'Account SID', 'AC…'), secret('twilio_auth_token', 'Auth token', ''), h('div', { class: 'row' }, h('div', { class: 'grow' }, text('twilio_from', 'SMS number', '+14155550100')), h('div', { class: 'grow' }, text('twilio_whatsapp_from', 'WhatsApp sender', '+14155238886', 'Optional (Twilio sandbox or approved sender)')))),
+    section('Single sign-on (OpenID Connect)', 'Okta, Microsoft Entra ID, Auth0, Keycloak, Google Workspace… Register this redirect URI with your provider: ' + (values.base_url || location.origin) + '/api/auth/sso/callback',
+      text('oidc_issuer', 'Issuer URL', 'https://acme.okta.com  ·  https://login.microsoftonline.com/<tenant>/v2.0', 'We read /.well-known/openid-configuration from here.'), h('div', { class: 'row' }, h('div', { class: 'grow' }, text('oidc_client_id', 'Client ID', '')), h('div', { class: 'grow' }, secret('oidc_client_secret', 'Client secret', ''))),
+      h('div', { class: 'row' }, h('div', { class: 'grow' }, text('sso_label', 'Button label', 'Okta')), h('div', { class: 'grow' }, text('sso_allowed_domains', 'Auto-create accounts for domains', 'acme.com, acme.io', 'Leave empty to allow only invited people.')), h('div', { style: { width: '140px' } }, field('New-user role', h('select', { class: 'select', onchange: e => (v.sso_default_role = e.target.value) }, ['member', 'viewer', 'guest', 'manager'].map(r => h('option', { value: r, selected: (values.sso_default_role || 'member') === r }, r)))))),
+      h('label', { class: 'row' }, h('span', { class: 'switch' }, h('input', { type: 'checkbox', checked: values.google_login === '1', onchange: e => (v.google_login = e.target.checked ? '1' : '0') }), h('i')), h('span', 'Or: offer “Sign in with Google” using the Google credentials above (add the redirect URI there too)')),
+      h('p', { class: 'hint' }, 'SAML is not supported; most identity providers offer OIDC alongside it. Password sign-in stays available for invited users.')),
+    section('Slack slash command', 'Create a Slack app with a slash command /taskboard pointing at ' + (values.base_url || location.origin) + '/api/hooks/slack. Teammates can then run list, done KEY, add …',
+      secret('slack_signing_secret', 'Signing secret', ''), secret('slack_bot_token', 'Bot token (optional)', 'xoxb-…', 'With users:read.email scope, people are matched to TaskBoard by email automatically; otherwise they paste their Slack member ID in Profile.')),
     section('AI (Anthropic Claude)', 'Powers the assistant, task drafting, breakdowns, risk analysis and briefings. Without a key, offline smart-parsing is used.',
       secret('anthropic_api_key', 'API key', 'sk-ant-…', 'Get one at console.anthropic.com. Stored on your server only.'), text('anthropic_model', 'Model', 'claude-sonnet-5-5', 'Leave blank for the default.')),
     h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: save }, 'Save settings'),

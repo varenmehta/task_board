@@ -6,7 +6,8 @@ import { notify, getPrefs } from './notifications.js';
 import { sendEmail, sendPhone, emailHtml, pruneOutbox } from './delivery.js';
 import { listAssigned, getTask, createTask } from './tasks.js';
 import { projectMembers, visibleProjects } from './access.js';
-import { googleConfigured, getIntegration, fetchLabelledEmails, markRead } from './channels/google.js';
+import { googleConfigured, getIntegration, fetchLabelledEmails, markRead, fetchReplyCandidates, senderUserId } from './channels/google.js';
+import { applyReply } from './emailreply.js';
 import { briefingBlurb, emailToTask } from './ai.js';
 import { getSetting } from './db.js';
 import { runRecurrences } from './recurring.js';
@@ -107,6 +108,23 @@ export async function pollInbox() {
   return created;
 }
 
+// Replies to notification emails land in the workspace sender's inbox; turn them into comments.
+export async function pollReplies() {
+  const sender = googleConfigured() ? senderUserId() : null;
+  if (!sender) return 0;
+  let n = 0;
+  try {
+    for (const mail of await fetchReplyCandidates(sender)) {
+      if (get('SELECT 1 FROM processed_emails WHERE user_id=? AND message_id=?', sender, mail.id)) { await markRead(sender, mail.id); continue; }
+      const r = applyReply(mail);
+      run('INSERT OR IGNORE INTO processed_emails(user_id,message_id,task_id) VALUES(?,?,NULL)', sender, mail.id);
+      if (r.ok) n++;
+      await markRead(sender, mail.id);
+    }
+  } catch (e) { console.error('[replies]', e.message); }
+  return n;
+}
+
 export function startScheduler() {
   let tick = 0;
   const safe = (name, fn) => Promise.resolve().then(fn).catch(e => console.error(`[scheduler:${name}]`, e.message));
@@ -115,6 +133,7 @@ export function startScheduler() {
     safe('reminders', () => (tick % 5 === 1 ? runReminders() : 0));
     safe('digests', () => runDigests());
     safe('inbox', () => (tick % 2 === 0 ? pollInbox() : 0));
+    safe('replies', () => (tick % 2 === 1 ? pollReplies() : 0));
     safe('recurring', () => (tick % 5 === 2 ? runRecurrences() : 0));
     if (tick % 60 === 0) { safe('prune', pruneOutbox); safe('snapshots', snapshotActiveSprints); }
   };

@@ -51,9 +51,12 @@ export async function renderAuth(root, mode, onAuthed) {
     const btn = h('button', { class: 'btn primary', style: { height: '40px' } }, 'Sign in');
     form = h('form', { class: 'auth-card', onsubmit: e => submit(e, () => api.post('/login', { email: f.email.value, password: f.password.value }), btn) },
       h('div', h('h2', 'Welcome back'), h('p', { class: 'muted', style: { marginTop: '4px' } }, 'Sign in to your workspace.')), field('Email', f.email), field('Password', f.password), err, btn,
+      state.sso ? h('a', { class: 'btn', style: { height: '40px' }, href: '/api/auth/sso/start' }, icon('shield', 16), `Sign in with ${state.sso.label}`) : null,
       !state.demo ? null : h('div', { class: 'demo-box' }, h('b', 'Sample workspace? '), 'Try a role: ',
         ...[['Manager', 'priya@demo.taskboard.dev'], ['Engineer', 'marcus@demo.taskboard.dev'], ['Viewer', 'dana@demo.taskboard.dev']].map(([r, em]) => h('button', { type: 'button', onclick: () => { f.email.value = em; f.password.value = 'demo1234'; } }, `${r} — ${em}`))));
   }
   mount(root, h('div', { class: 'auth' }, hero(), h('div', { class: 'auth-form' }, form)));
+  const ssoErr = new URLSearchParams((location.hash.split('?')[1] || '')).get('sso_error');
+  if (ssoErr) { showErr(ssoErr); history.replaceState(null, '', '#/'); }
   void toast;
 }

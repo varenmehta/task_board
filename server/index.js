@@ -4,7 +4,8 @@ import path from 'node:path';
 import { PORT, PUBLIC_DIR } from './config.js';
 import { router } from './routes.js';
 import { readBody, send, parseCookies } from './router.js';
-import { userFromToken } from './auth.js';
+import { userFromToken, rateLimit } from './auth.js';
+import { authenticateBearer } from './tokens.js';
 import { HttpError } from './util.js';
 import './notifications.js';
 import './automations.js';
@@ -35,26 +36,37 @@ export const server = http.createServer(async (req, res) => {
     if (!hit) throw new HttpError(404, 'Not found');
     const { route, params } = hit;
     const cookies = parseCookies(req.headers.cookie);
-    const user = userFromToken(cookies.tb_session);
+    // API clients authenticate with "Authorization: Bearer tb_…"; browsers use the session cookie
+    let user = null, viaToken = null;
+    if (req.headers.authorization) {
+      viaToken = authenticateBearer(req.headers.authorization);
+      if (!viaToken) throw new HttpError(401, 'Invalid or expired API token');
+      user = viaToken.user;
+      if (!rateLimit('tok:' + viaToken.tokenId, 600)) throw new HttpError(429, 'API rate limit exceeded (600 requests/minute)');
+      if (viaToken.scope === 'read' && !['GET', 'HEAD'].includes(req.method)) throw new HttpError(403, 'This token is read-only');
+    } else user = userFromToken(cookies.tb_session);
     if (!route.opts.public && !user) throw new HttpError(401, 'Please sign in');
 
-    let body = {}, rawBody = null;
+    let body = {}, rawBody = null, rawText = '';
     if (route.opts.raw) {
       // binary upload: the custom header forces a CORS preflight, so cross-site pages can't forge it
       if (!req.headers['x-filename']) throw new HttpError(400, 'Missing X-Filename header');
       rawBody = await readBody(req, { raw: true });
     } else if (!['GET', 'HEAD'].includes(req.method)) {
-      const raw = await readBody(req);
+      rawText = await readBody(req);
       const type = req.headers['content-type'] || '';
-      if (type.includes('application/x-www-form-urlencoded')) body = Object.fromEntries(new URLSearchParams(raw));
-      else {
+      if (route.opts.webhook) {
+        // third-party callers (Twilio, Slack, GitHub…): authenticated by signature/token inside the handler
+        if (type.includes('application/x-www-form-urlencoded')) body = Object.fromEntries(new URLSearchParams(rawText));
+        else { try { body = rawText ? JSON.parse(rawText) : {}; } catch { throw new HttpError(400, 'Invalid JSON'); } }
+        if (body.payload && typeof body.payload === 'string') { try { body = JSON.parse(body.payload); } catch { /* keep form body */ } }
+      } else {
         // JSON-only for browser-driven writes also blocks cross-site form posts (CSRF).
-        if (raw && !type.includes('application/json')) throw new HttpError(415, 'Content-Type must be application/json');
-        try { body = raw ? JSON.parse(raw) : {}; } catch { throw new HttpError(400, 'Invalid JSON'); }
+        if (rawText && !type.includes('application/json')) throw new HttpError(415, 'Content-Type must be application/json');
+        try { body = rawText ? JSON.parse(rawText) : {}; } catch { throw new HttpError(400, 'Invalid JSON'); }
       }
-      if (type.includes('application/x-www-form-urlencoded') && pathname !== '/api/webhooks/twilio') throw new HttpError(415, 'Content-Type must be application/json');
     }
-    const result = await route.handler({ req, res, params, query: Object.fromEntries(url.searchParams), body, user, raw: rawBody });
+    const result = await route.handler({ req, res, params, query: Object.fromEntries(url.searchParams), body, user, raw: rawBody, rawText, via: viaToken ? 'token' : 'session' });
     if (route.opts.stream || res.writableEnded) return;
     if (result?.__raw) { res.writeHead(result.__raw.status || 200, result.__raw.headers); return res.end(result.__raw.body); }
     if (result?.__xml) { res.writeHead(200, { 'Content-Type': 'text/xml' }); return res.end(result.__xml); }

@@ -285,6 +285,7 @@ export function taskDetail(actor, id) {
       .map(a => ({ ...a, detail: parseJSON(a.detail, {}) })),
     attachments: all('SELECT id,name,mime,size,user_id,created_at FROM attachments WHERE task_id=? ORDER BY id', id),
     links: getLinks(id),
+    prs: all('SELECT provider,repo,number,title,url,state FROM task_prs WHERE task_id=? ORDER BY id', id),
     epic: task.epic_id ? (() => { const e = getTask(task.epic_id); return e && { id: e.id, key: e.key, title: e.title }; })() : null,
     children: task.type === 'epic' ? all(`${TASK_SELECT} WHERE t.epic_id=? ORDER BY t.position`, id).map(shape).map(t => ({ id: t.id, key: t.key, title: t.title, status: t.status, status_label: t.status_label, status_category: t.status_category, assignee_id: t.assignee_id })) : [],
     can_edit: canEditProject(actor, project),

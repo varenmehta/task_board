@@ -24,6 +24,7 @@ async function boot() {
   try {
     const b = await api.get('/bootstrap');
     state.demo = b.demo;
+    state.sso = b.sso;
     Object.assign(state, { workspace: b.workspace, statuses: b.statuses, aiMode: b.ai_mode, me: b.me });
     document.title = b.workspace;
     if (b.needs_setup) return renderAuth(root, 'setup', onAuthed);

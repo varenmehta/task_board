@@ -1,7 +1,7 @@
 // Shared client state + tiny pub/sub.
 export const state = {
   me: null, workspace: 'TaskBoard', statuses: [], aiMode: 'local',
-  projects: [], users: [], teams: [], unread: 0, demo: false,
+  projects: [], users: [], teams: [], unread: 0, demo: false, sso: null,
 };
 const subs = new Map();
 export const on = (evt, fn) => { if (!subs.has(evt)) subs.set(evt, new Set()); subs.get(evt).add(fn); return () => subs.get(evt).delete(fn); };
